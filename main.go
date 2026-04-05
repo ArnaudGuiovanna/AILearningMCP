@@ -1,3 +1,4 @@
+// AI Learning MCP Server
 package main
 
 import (
