@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -15,19 +14,10 @@ import (
 	"learning-runtime/db"
 )
 
-// AuthCode holds the authorization code state.
-type AuthCode struct {
-	LearnerID     string
-	CodeChallenge string
-	ExpiresAt     time.Time
-}
-
 // OAuthServer implements the OAuth 2.1 authorization server.
 type OAuthServer struct {
 	store   *db.Store
 	baseURL string
-	codes   map[string]*AuthCode
-	codesMu sync.Mutex
 	logger  *slog.Logger
 }
 
@@ -36,7 +26,6 @@ func NewOAuthServer(store *db.Store, baseURL string, logger *slog.Logger) *OAuth
 	return &OAuthServer{
 		store:   store,
 		baseURL: baseURL,
-		codes:   make(map[string]*AuthCode),
 		logger:  logger,
 	}
 }
@@ -162,13 +151,11 @@ func (s *OAuthServer) handleAuthorizePost(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.codesMu.Lock()
-	s.codes[code] = &AuthCode{
-		LearnerID:     learnerID,
-		CodeChallenge: codeChallenge,
-		ExpiresAt:     time.Now().Add(5 * time.Minute),
+	if err := s.store.CreateAuthCode(code, learnerID, codeChallenge, time.Now().Add(5*time.Minute)); err != nil {
+		s.logger.Error("create auth code failed", "err", err)
+		renderAuthPage(w, data, "Internal error. Please try again.")
+		return
 	}
-	s.codesMu.Unlock()
 
 	// Redirect to redirect_uri with code and state.
 	redirectURL := redirectURI + "?code=" + code
@@ -209,15 +196,9 @@ func (s *OAuthServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *htt
 		return
 	}
 
-	s.codesMu.Lock()
-	authCode, ok := s.codes[code]
-	if ok {
-		delete(s.codes, code)
-	}
-	s.codesMu.Unlock()
-
-	if !ok || time.Now().After(authCode.ExpiresAt) {
-		s.logger.Error("token exchange: code not found or expired", "found", ok)
+	authCode, err := s.store.ConsumeAuthCode(code)
+	if err != nil || time.Now().After(authCode.ExpiresAt) {
+		s.logger.Error("token exchange: code not found or expired", "err", err)
 		writeTokenError(w, "invalid_grant", http.StatusBadRequest)
 		return
 	}
@@ -317,6 +298,23 @@ func (s *OAuthServer) handleDynamicClientRegistration(w http.ResponseWriter, r *
 	// Generate a client_id for this client
 	clientID, err := generateCode()
 	if err != nil {
+		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Persist the client registration
+	redirectURIs := "[]"
+	if uris, ok := req["redirect_uris"]; ok {
+		if b, err := json.Marshal(uris); err == nil {
+			redirectURIs = string(b)
+		}
+	}
+	clientName := ""
+	if name, ok := req["client_name"].(string); ok {
+		clientName = name
+	}
+	if err := s.store.CreateOAuthClient(clientID, clientName, redirectURIs); err != nil {
+		s.logger.Error("persist client registration failed", "err", err)
 		http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
 		return
 	}
