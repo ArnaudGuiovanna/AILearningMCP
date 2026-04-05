@@ -20,6 +20,9 @@ type RecordInteractionParams struct {
 	ErrorType           string  `json:"error_type,omitempty" jsonschema:"Type d'erreur si echec: SYNTAX_ERROR, LOGIC_ERROR, KNOWLEDGE_GAP (optionnel)"`
 	Notes               string  `json:"notes" jsonschema:"Notes optionnelles sur l'interaction"`
 	DomainID            string  `json:"domain_id,omitempty" jsonschema:"ID du domaine (optionnel)"`
+	HintsRequested      int     `json:"hints_requested,omitempty" jsonschema:"Nombre d'indices demandes pendant l'echange (optionnel, defaut 0)"`
+	SelfInitiated       bool    `json:"self_initiated,omitempty" jsonschema:"true si la session a demarre sans alerte webhook"`
+	CalibrationID       string  `json:"calibration_id,omitempty" jsonschema:"ID de la prediction de calibration associee (optionnel)"`
 }
 
 func registerRecordInteraction(server *mcp.Server, deps *Deps) {
@@ -38,26 +41,35 @@ func registerRecordInteraction(server *mcp.Server, deps *Deps) {
 			return r, nil, nil
 		}
 
-		// Create interaction record
-		interaction := &models.Interaction{
-			LearnerID:    learnerID,
-			Concept:      params.Concept,
-			ActivityType: params.ActivityType,
-			Success:      params.Success,
-			ResponseTime: int(params.ResponseTimeSeconds),
-			Confidence:   params.Confidence,
-			ErrorType:    params.ErrorType,
-			Notes:        params.Notes,
-		}
-		if err := deps.Store.CreateInteraction(interaction); err != nil {
-			r, _ := errorResult(fmt.Sprintf("failed to create interaction: %v", err))
-			return r, nil, nil
-		}
-
-		// Get or create concept state
+		// Get or create concept state — used for proactive review check AND algorithm updates
 		cs, err := deps.Store.GetConceptState(learnerID, params.Concept)
 		if err != nil {
 			cs = models.NewConceptState(learnerID, params.Concept)
+		}
+
+		// Create interaction record
+		interaction := &models.Interaction{
+			LearnerID:      learnerID,
+			Concept:        params.Concept,
+			ActivityType:   params.ActivityType,
+			Success:        params.Success,
+			ResponseTime:   int(params.ResponseTimeSeconds),
+			Confidence:     params.Confidence,
+			ErrorType:      params.ErrorType,
+			Notes:          params.Notes,
+			HintsRequested: params.HintsRequested,
+			SelfInitiated:  params.SelfInitiated,
+			CalibrationID:  params.CalibrationID,
+		}
+
+		// Check proactive review before recording
+		if cs.NextReview != nil && cs.NextReview.After(time.Now().UTC()) && cs.CardState != "new" {
+			interaction.IsProactiveReview = true
+		}
+
+		if err := deps.Store.CreateInteraction(interaction); err != nil {
+			r, _ := errorResult(fmt.Sprintf("failed to create interaction: %v", err))
+			return r, nil, nil
 		}
 
 		// BKT update — error-type-aware
