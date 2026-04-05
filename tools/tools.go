@@ -59,5 +59,8 @@ func RegisterTools(server *mcp.Server, deps *Deps) {
 	registerInitDomain(server, deps)
 	registerAddConcepts(server, deps)
 	registerUpdateLearnerProfile(server, deps)
+	registerRecordAffect(server, deps)
+	registerCalibrationCheck(server, deps)
+	registerRecordCalibrationResult(server, deps)
 	RegisterPrompt(server)
 }
