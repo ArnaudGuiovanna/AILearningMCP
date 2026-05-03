@@ -317,33 +317,27 @@
       class: "node node-interactive node-" + n.state,
       transform: "translate(" + pos.x + "," + pos.y + ")",
     });
-    const radius = (n.state === "focus") ? 18 : (n.state === "solid" ? 14 : 12);
-    const fillByState = {
-      not_started: "transparent",
-      fragile: "#da6e38",
-      in_progress: "#f3a875",
-      solid: "#e8804a",
-      focus: "#e8804a",
+    const stateStyle = {
+      not_started: { r: 11, fill: "transparent", stroke: "#8a8378", strokeWidth: 1.5, dasharray: "3 3" },
+      fragile:     { r: 11, fill: "#da6e38",     stroke: "#da6e38", strokeWidth: 2,   dasharray: "5 3" },
+      in_progress: { r: 13, fill: "#f3a875",     stroke: "#f3a875", strokeWidth: 2,   dasharray: "" },
+      solid:       { r: 14, fill: "#e8804a",     stroke: "#e8804a", strokeWidth: 2,   dasharray: "" },
+      focus:       { r: 18, fill: "#e8804a",     stroke: "#f3a875", strokeWidth: 3,   dasharray: "" },
     };
-    const strokeByState = {
-      not_started: "#8a8378",
-      fragile: "#da6e38",
-      in_progress: "#f3a875",
-      solid: "#e8804a",
-      focus: "#f3a875",
-    };
+    const s = stateStyle[n.state] || stateStyle.not_started;
     const circle = svgNode("circle", {
-      r: String(radius),
-      fill: fillByState[n.state] || "transparent",
-      stroke: strokeByState[n.state] || "#8a8378",
-      "stroke-width": (n.state === "focus") ? "3" : "2",
-      class: (n.state === "focus") ? "focus-halo" : "",
+      r: String(s.r),
+      fill: s.fill,
+      stroke: s.stroke,
+      "stroke-width": String(s.strokeWidth),
+      class: (n.state === "focus") ? "halo" : "",
     });
+    if (s.dasharray) circle.setAttribute("stroke-dasharray", s.dasharray);
     g.appendChild(circle);
 
     const label = svgNode("text", {
       x: "0",
-      y: String(radius + 16),
+      y: String(s.r + 16),
       "text-anchor": "middle",
       fill: "#f5ede5",
       "font-size": "12",
@@ -362,16 +356,17 @@
   function drawEdge(svg, e, layout) {
     const a = layout[e.from], b = layout[e.to];
     if (!a || !b) return;
-    const opacityByType = { traversed: 0.4, active: 0.8, future: 0.45 };
+    const opacityByType = { traversed: 0.5, active: 0.85, future: 0.5 };
     const colorByType = { traversed: "#a6968a", active: "#f3a875", future: "#a6968a" };
     const strokeWidthByType = { traversed: 1.5, active: 2.5, future: 1.5 };
     const line = svgNode("line", {
       x1: String(a.x), y1: String(a.y), x2: String(b.x), y2: String(b.y),
       stroke: colorByType[e.type] || "#a6968a",
       "stroke-width": String(strokeWidthByType[e.type] || 1.5),
-      "stroke-opacity": String(opacityByType[e.type] || 0.45),
+      "stroke-opacity": String(opacityByType[e.type] || 0.5),
       class: "edge edge-" + e.type,
     });
+    if (e.type === "future") line.setAttribute("stroke-dasharray", "6 4");
     svg.appendChild(line);
   }
 

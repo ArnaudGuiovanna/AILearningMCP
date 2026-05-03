@@ -27,6 +27,8 @@ func TestEmbeddedCockpitHTML_HasV4Markers(t *testing.T) {
 	mustContain := []string{
 		"--bg-base:",                        // token system
 		"--accent-500:",                     // token system
+		"--cream-100:",                      // cream token namespace
+		"--border-subtle:",                  // border token namespace
 		"cv4-pulse-halo",                    // halo animation
 		"cv4-fade-up",                       // fade-up animation
 		"prefers-reduced-motion",            // a11y
