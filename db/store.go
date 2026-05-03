@@ -1112,12 +1112,22 @@ type RawLearnerEvent struct {
 	Concept string
 }
 
+// Mastery thresholds mirrored from the engine layer (algorithms.KSTMasteryThreshold = 0.70
+// and the engine.NodeClassify fragile boundary 0.30). Duplicated here because db cannot
+// import algorithms or engine without creating a cycle. If you tune either threshold,
+// update both packages in lockstep.
+const (
+	masteryThreshold = 0.70
+	fragileThreshold = 0.30
+)
+
 // GetRecentLearnerEvents returns a chronological-DESC list of cognitive events
 // since `since`, used by the cockpit "Modèle global" timeline. Events are
 // derived from existing tables — no new persistence:
 //
 //   - mastery_threshold : concept_state.p_mastery >= 0.70 and updated_at >= since
-//   - retention_drop    : p_mastery < 0.30 (proxy for fragile transition) and updated_at >= since
+//   - retention_drop    : p_mastery currently < 0.30 (proxy for the fragile state — not a real drop event,
+//                         since the query sees a snapshot, not a transition) and updated_at >= since
 //   - streak_start      : earliest interaction in a still-running streak (computed via GetActivityStreak)
 //
 // (calibration_threshold derivable from calibration_history but skipped in v1
@@ -1141,14 +1151,14 @@ func (s *Store) GetRecentLearnerEvents(learnerID string, since time.Time) ([]Raw
 		var mastery float64
 		var at time.Time
 		if err := rows.Scan(&concept, &mastery, &at); err != nil {
-			return nil, fmt.Errorf("scan event: %w", err)
+			return nil, fmt.Errorf("scan event row: %w", err)
 		}
-		if mastery >= 0.70 {
+		if mastery >= masteryThreshold {
 			events = append(events, RawLearnerEvent{
 				At: at, Kind: "mastery_threshold", Concept: concept,
 				Message: fmt.Sprintf("%s atteint le seuil de maîtrise", concept),
 			})
-		} else if mastery < 0.30 {
+		} else if mastery < fragileThreshold {
 			events = append(events, RawLearnerEvent{
 				At: at, Kind: "retention_drop", Concept: concept,
 				Message: fmt.Sprintf("%s passe en fragile", concept),
