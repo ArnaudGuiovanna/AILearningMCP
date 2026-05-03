@@ -10,6 +10,7 @@ data/
 # Binary
 tutor-mcp
 learning-runtime
+eval/persona/bin/
 
 # IDE
 .idea/
