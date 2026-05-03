@@ -2,7 +2,6 @@ package engine
 
 import (
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -68,12 +67,10 @@ func TestSendOLM_DispatchesFallbackWhenQueueEmpty(t *testing.T) {
 	)
 	seedConceptState(t, store, "L1", "a", 0.90, "review")
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sched := &Scheduler{store: store, logger: logger, client: &http.Client{Timeout: 2 * time.Second}}
-
+	sched := schedulerForTest(store)
 	sched.sendOLM()
 
-	sent, _ := store.WasAlertSentToday("L1", "OLM")
+	sent, _ := store.WasAlertSentToday("L1", alertKindOLM)
 	if !sent {
 		t.Errorf("OLM dispatch should mark sent today")
 	}
@@ -100,11 +97,10 @@ func TestSendOLM_SkipsWhenNothingActionable(t *testing.T) {
 	seedDomain(t, raw, "L1", "math", []string{"a"}, nil, false)
 	seedConceptState(t, store, "L1", "a", 0.90, "review")
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sched := &Scheduler{store: store, logger: logger, client: &http.Client{Timeout: 2 * time.Second}}
+	sched := schedulerForTest(store)
 	sched.sendOLM()
 
-	sent, _ := store.WasAlertSentToday("L1", "OLM")
+	sent, _ := store.WasAlertSentToday("L1", alertKindOLM)
 	if sent {
 		t.Errorf("nothing actionable should NOT mark OLM as sent")
 	}

@@ -536,7 +536,7 @@ func (s *Scheduler) sendOLM() {
 		if avail != nil && avail.DoNotDisturb {
 			continue
 		}
-		if sent, _ := s.store.WasAlertSentToday(learner.ID, "OLM"); sent {
+		if sent, _ := s.store.WasAlertSentToday(learner.ID, alertKindOLM); sent {
 			continue
 		}
 
@@ -578,7 +578,7 @@ func (s *Scheduler) sendOLM() {
 			s.logger.Error("scheduler: olm webhook", "err", err, "learner", learner.ID)
 			continue
 		}
-		_ = s.store.CreateScheduledAlert(learner.ID, "OLM", "", now)
+		_ = s.store.CreateScheduledAlert(learner.ID, alertKindOLM, "", now)
 		s.logger.Info("scheduler: olm dispatched", "learner", learner.ID, "embeds", len(embeds))
 	}
 }
@@ -588,13 +588,13 @@ func (s *Scheduler) sendOLM() {
 // visual consistency with the Go fallback.
 func embedFromQueueItem(item *models.WebhookQueueItem, urgency models.AlertUrgency) discordEmbed {
 	title := "🧭 État du moment"
-	color := 0xEB459E
+	color := colorInfo
 	switch urgency {
 	case models.UrgencyCritical:
 		title = "🚨 État — un concept à reprendre vite"
-		color = 0xFF6B6B
+		color = colorCritical
 	case models.UrgencyWarning:
-		color = 0xF5A623
+		color = colorWarning
 	}
 	return discordEmbed{
 		Title:       title,
@@ -602,6 +602,11 @@ func embedFromQueueItem(item *models.WebhookQueueItem, urgency models.AlertUrgen
 		Color:       color,
 	}
 }
+
+// alertKindOLM is the alert tag used by sendOLM for daily-dedup checks
+// (WasAlertSentToday + CreateScheduledAlert). Single source of truth so the
+// two call sites cannot drift apart.
+const alertKindOLM = "OLM"
 
 // fromExportedEmbed converts engine.DiscordEmbed (used by FormatOLMEmbed for
 // testability) to scheduler.discordEmbed. Same shape; plain field copy.
