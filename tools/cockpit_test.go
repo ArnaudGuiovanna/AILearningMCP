@@ -4,6 +4,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -133,5 +134,58 @@ func TestCockpitResource_Registered(t *testing.T) {
 	const wantMIME = "text/html;profile=mcp-app"
 	if res.Contents[0].MIMEType != wantMIME {
 		t.Errorf("MIMEType=%q, want %q", res.Contents[0].MIMEType, wantMIME)
+	}
+}
+
+func TestOpenCockpit_ReturnsMetaAndStructuredContent(t *testing.T) {
+	store, deps := setupToolsTest(t)
+	d := makeOwnerDomain(t, store, "L_owner", "math")
+
+	res := callTool(t, deps, registerOpenCockpit, "L_owner", "open_cockpit", map[string]any{
+		"domain_id": d.ID,
+	})
+	if res.IsError {
+		t.Fatalf("got error: %q", resultText(res))
+	}
+	// _meta.ui.resourceUri must be set
+	uiMeta, ok := res.Meta["ui"].(map[string]any)
+	if !ok {
+		t.Fatalf("_meta.ui missing or wrong type: %+v", res.Meta)
+	}
+	if uiMeta["resourceUri"] != "ui://cockpit" {
+		t.Errorf("_meta.ui.resourceUri=%v, want ui://cockpit", uiMeta["resourceUri"])
+	}
+	// structuredContent must marshal to OLMGraph shape — read directly off res.StructuredContent.
+	scBytes, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structuredContent: %v", err)
+	}
+	var sc map[string]any
+	if err := json.Unmarshal(scBytes, &sc); err != nil {
+		t.Fatalf("unmarshal structuredContent: %v", err)
+	}
+	if sc["domain_id"] != d.ID {
+		t.Errorf("structuredContent.domain_id=%v, want %s", sc["domain_id"], d.ID)
+	}
+	if _, ok := sc["concepts"]; !ok {
+		t.Errorf("structuredContent.concepts missing: %+v", sc)
+	}
+	if _, ok := sc["edges"]; !ok {
+		t.Errorf("structuredContent.edges missing: %+v", sc)
+	}
+	if _, ok := sc["streak"]; !ok {
+		t.Errorf("structuredContent.streak missing: %+v", sc)
+	}
+	// content[0].text must be non-empty fallback (FormatOLMEmbed.Description text)
+	if len(res.Content) == 0 {
+		t.Fatal("Content empty — text fallback missing")
+	}
+}
+
+func TestOpenCockpit_NoAuth(t *testing.T) {
+	_, deps := setupToolsTest(t)
+	res := callTool(t, deps, registerOpenCockpit, "", "open_cockpit", map[string]any{})
+	if !res.IsError {
+		t.Fatalf("expected auth error")
 	}
 }

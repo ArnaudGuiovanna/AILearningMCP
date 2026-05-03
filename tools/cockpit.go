@@ -271,6 +271,48 @@ func registerGetCockpitState(server *mcp.Server, deps *Deps) {
 	})
 }
 
+type OpenCockpitParams struct {
+	DomainID string `json:"domain_id,omitempty" jsonschema:"ID du domaine (optionnel, dernier domaine actif si absent)"`
+}
+
+func registerOpenCockpit(server *mcp.Server, deps *Deps) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "open_cockpit",
+		Description: "Ouvre le cockpit d'apprentissage de l'apprenant — carte cognitive interactive avec graphe KST, focus du moment, signaux métacognitifs et progression vers le goal. Rendu nativement par les clients qui supportent MCP Apps (Claude Desktop, claude.ai) ; sinon, retourne un résumé texte.",
+		Meta: mcp.Meta{
+			"ui": map[string]any{
+				"resourceUri": "ui://cockpit",
+			},
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, params OpenCockpitParams) (*mcp.CallToolResult, any, error) {
+		learnerID, err := getLearnerID(ctx)
+		if err != nil {
+			deps.Logger.Error("open_cockpit: auth failed", "err", err)
+			r, _ := errorResult(err.Error())
+			return r, nil, nil
+		}
+
+		graph, err := engine.BuildOLMGraph(deps.Store, learnerID, params.DomainID)
+		if err != nil {
+			deps.Logger.Error("open_cockpit: build graph failed", "err", err, "learner", learnerID)
+			r, _ := errorResult(err.Error())
+			return r, nil, nil
+		}
+
+		// Text fallback for clients without MCP Apps support — reuses the
+		// webhook formatter so cockpit and webhook show the same prose.
+		fallback := engine.FormatOLMEmbed(graph.OLMSnapshot)
+
+		return &mcp.CallToolResult{
+			Content:           []mcp.Content{&mcp.TextContent{Text: fallback.Description}},
+			StructuredContent: graph,
+			Meta: mcp.Meta{
+				"ui": map[string]any{"resourceUri": "ui://cockpit"},
+			},
+		}, nil, nil
+	})
+}
+
 // registerCockpitResource serves the cockpit HTML at ui://cockpit. The HTML
 // is embedded via assets.FS — see assets/embed.go.
 func registerCockpitResource(server *mcp.Server, deps *Deps) {
