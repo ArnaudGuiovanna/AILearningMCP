@@ -65,7 +65,7 @@ func NodeClassify(cs *models.ConceptState) NodeState {
 }
 
 // Calibration bias is "actionable" when |bias| exceeds this threshold.
-// Surfaced both in HasActionable and in metacogLine, so a single source
+// Surfaced both in HasActionable and in MetacogLine, so a single source
 // of truth avoids them drifting apart.
 const calibrationActionableThreshold = 1.5
 
@@ -351,7 +351,7 @@ func FormatOLMEmbed(snap *OLMSnapshot) DiscordEmbed {
 		lines = append(lines, fmt.Sprintf("%s : **%s** (%s).", prefix, snap.FocusConcept, snap.FocusReason))
 	}
 
-	if line := metacogLine(snap); line != "" {
+	if line := MetacogLine(snap); line != "" {
 		lines = append(lines, line)
 	}
 
@@ -392,10 +392,12 @@ func compactBuckets(snap *OLMSnapshot) string {
 	return strings.Join(parts, " · ")
 }
 
-// metacogLine returns the single most actionable metacognitive sentence,
+// MetacogLine returns the single most actionable metacognitive sentence,
 // in descending priority: calibration bias, then autonomy trend, then affect
-// trend. Empty string when no signal is active.
-func metacogLine(snap *OLMSnapshot) string {
+// trend. Empty string when no signal is active. Exported so the cockpit's
+// fallback rendering and BuildOLMGraph can produce the same text as the
+// webhook's FormatOLMEmbed.
+func MetacogLine(snap *OLMSnapshot) string {
 	if snap.CalibrationBias > calibrationActionableThreshold {
 		return "Tu sur-estimes un peu tes acquis depuis 3 sessions — quelques exercices à froid t'aideront à recalibrer."
 	}

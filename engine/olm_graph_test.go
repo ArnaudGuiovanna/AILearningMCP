@@ -31,3 +31,16 @@ func TestNodeClassify(t *testing.T) {
 		})
 	}
 }
+
+func TestMetacogLine_Exported(t *testing.T) {
+	// Bias-positive sur-estimation case (>1.5).
+	got := MetacogLine(&OLMSnapshot{CalibrationBias: 2.0})
+	if got == "" || got[:2] != "Tu" {
+		t.Errorf("MetacogLine(over-confident) = %q, want non-empty starting with 'Tu'", got)
+	}
+	// No signal case.
+	got = MetacogLine(&OLMSnapshot{CalibrationBias: 0.0})
+	if got != "" {
+		t.Errorf("MetacogLine(no signal) = %q, want empty", got)
+	}
+}
