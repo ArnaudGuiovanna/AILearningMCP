@@ -335,6 +335,11 @@ func registerCockpitResource(server *mcp.Server, deps *Deps) {
 		Description: "Interface MCP App rendue par le client (Claude Desktop, claude.ai). Carte cognitive interactive de l'apprenant pour la session courante et le modèle global.",
 		MIMEType:    "text/html;profile=mcp-app",
 	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		uri := ""
+		if req != nil && req.Params != nil {
+			uri = req.Params.URI
+		}
+		deps.Logger.Info("cockpit resource read", "uri", uri)
 		body, err := assets.FS.ReadFile("cockpit.html")
 		if err != nil {
 			deps.Logger.Error("cockpit resource: read embedded html", "err", err)
