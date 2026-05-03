@@ -296,8 +296,13 @@ html, body {
       });
     } catch (err) { console.warn('ui/update-model-context failed:', err); }
   }
-  async function callTool(name, args) {
-    return request('tools/call', { name: name, arguments: args || {} });
+  // fireTool sends tools/call as a request (with id, per JSON-RPC spec) but
+  // does NOT track it in `pending`. Per MCP Apps spec §Interactive Phase,
+  // the host delivers the result via ui/notifications/tool-result, not as a
+  // JSON-RPC response. Tracking would just leak entries.
+  function fireTool(name, args) {
+    const id = nextId++;
+    window.parent.postMessage({ jsonrpc: '2.0', id: id, method: 'tools/call', params: { name: name, arguments: args || {} } }, '*');
   }
 
   // ─── Safe DOM helpers (textContent only, no innerHTML on dynamic data) ─────
@@ -443,54 +448,42 @@ html, body {
   }
 
   // ─── Click handlers (delegation) ──────────────
-  document.addEventListener('click', async (e) => {
+  // NOTE: per MCP Apps spec §Interactive Phase, tools/call from the View
+  // does NOT receive a JSON-RPC response. The host pushes the result back
+  // via ui/notifications/tool-result. So we send tools/call fire-and-forget
+  // and let the notification handler trigger any re-render.
+  document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-action="attack"]');
     if (btn && state.graph && state.graph.focus_concept) {
       btn.disabled = true;
-      try {
-        const r = await callTool('learning_negotiation', { concept: state.graph.focus_concept });
-        const sc = r && r.structuredContent;
-        const card = document.getElementById('ck-focus-card');
-        const note = el('div', { class: 'ck-focus-activity', text: (sc && sc.activity && sc.activity.title) || 'Activité transmise à Claude →' });
-        card.appendChild(note);
-        await pushModelContext(
-          "L'apprenant attaque le palier '" + state.graph.focus_concept + "'.",
-          { negotiation_result: sc }
-        );
-      } catch (err) {
-        showToast("Négociation impossible — réessaie ?");
-        btn.disabled = false;
-      }
+      const concept = state.graph.focus_concept;
+      // Optimistic UI: surface the action immediately.
+      const card = document.getElementById('ck-focus-card');
+      card.appendChild(el('div', { class: 'ck-focus-activity', text: 'Activité transmise à Claude →' }));
+      // Fire the tool (notification path will deliver the result).
+      fireTool('learning_negotiation', { concept: concept });
+      // Push to Claude's model context so it picks up the j'attaque on next turn.
+      pushModelContext(
+        "L'apprenant attaque le palier '" + concept + "'.",
+        { focus_attacked: concept }
+      );
       return;
     }
     const row = e.target.closest('[data-kc]');
     if (row) {
       // row[data-kc=<concept>] identifies the KC
       const concept = row.getAttribute('data-kc');
-      try {
-        const r = await callTool('pick_concept', { concept: concept, domain_id: state.graph.domain_id });
-        if (r && r.structuredContent) {
-          renderAll(r.structuredContent);
-          await pushModelContext(
-            "L'apprenant a choisi '" + concept + "' comme nouveau focus.",
-            { focus_changed_to: concept }
-          );
-        }
-      } catch (err) {
-        showToast("Ce concept n'existe pas dans ce domaine");
-      }
+      fireTool('pick_concept', { concept: concept, domain_id: state.graph.domain_id });
+      pushModelContext(
+        "L'apprenant a choisi '" + concept + "' comme nouveau focus.",
+        { focus_changed_to: concept }
+      );
     }
   });
 
-  document.getElementById('ck-domain-select').addEventListener('change', async (e) => {
+  document.getElementById('ck-domain-select').addEventListener('change', (e) => {
     const did = e.target.value;
-    try {
-      const r = await callTool('get_olm_snapshot', { scope: 'graph', domain_id: did });
-      if (r && r.structuredContent) renderAll(r.structuredContent);
-    } catch (err) {
-      showToast("Impossible de charger ce domaine");
-      e.target.value = (state.graph && state.graph.domain_id) || '';
-    }
+    fireTool('get_olm_snapshot', { scope: 'graph', domain_id: did });
   });
 
   document.getElementById('ck-fullscreen-btn').addEventListener('click', () => {
