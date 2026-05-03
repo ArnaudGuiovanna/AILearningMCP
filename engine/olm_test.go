@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -229,5 +230,106 @@ func TestBuildOLMSnapshot_MetacognitiveSignals(t *testing.T) {
 		// All 3 satisfaction = 2 → no diff → stable. Empty also acceptable
 		// if implementation returns "" when diff is below threshold.
 		t.Errorf("AffectTrend=%q, want stable or empty", snap.AffectTrend)
+	}
+}
+
+func TestBuildOLMSnapshot_KSTProgressAndActionable(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b", "c", "d"},
+		map[string][]string{"b": {"a"}, "c": {"b"}, "d": {"c"}},
+		false,
+	)
+	// 2 mastered, 2 not started → KSTProgress = 2/4 = 0.5
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+	seedConceptState(t, store, "L1", "b", 0.85, "review")
+
+	snap, err := BuildOLMSnapshot(store, "L1", "")
+	if err != nil {
+		t.Fatalf("BuildOLMSnapshot: %v", err)
+	}
+	if snap.KSTProgress < 0.49 || snap.KSTProgress > 0.51 {
+		t.Errorf("KSTProgress=%f, want ~0.5", snap.KSTProgress)
+	}
+	if !snap.HasActionable {
+		t.Errorf("HasActionable=false, want true (frontier focus exists)")
+	}
+}
+
+func TestBuildOLMSnapshot_NotActionable_AllSolid(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b"},
+		map[string][]string{"b": {"a"}},
+		false,
+	)
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+	seedConceptState(t, store, "L1", "b", 0.90, "review")
+
+	snap, err := BuildOLMSnapshot(store, "L1", "")
+	if err != nil {
+		t.Fatalf("BuildOLMSnapshot: %v", err)
+	}
+	if snap.HasActionable {
+		t.Errorf("HasActionable=true with all concepts mastered and no metacog signal, want false")
+	}
+	if snap.FocusConcept != "" {
+		t.Errorf("FocusConcept=%q with no actionable, want empty", snap.FocusConcept)
+	}
+}
+
+func TestFormatOLMEmbed_FocusWarning(t *testing.T) {
+	snap := &OLMSnapshot{
+		DomainID:      "d1",
+		DomainName:    "Python pour bio-info",
+		PersonalGoal:  "analyser tes données de jardin",
+		Solid:         3,
+		InProgress:    2,
+		Fragile:       1,
+		NotStarted:    2,
+		FocusConcept:  "boucles",
+		FocusReason:   "retention 50%",
+		FocusUrgency:  models.UrgencyWarning,
+		KSTProgress:   0.50,
+		HasActionable: true,
+	}
+	embed := FormatOLMEmbed(snap)
+	if embed.Title != "🧭 État du moment" {
+		t.Errorf("Title=%q", embed.Title)
+	}
+	if !strings.Contains(embed.Description, "Python pour bio-info") {
+		t.Errorf("Description missing domain name: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "boucles") {
+		t.Errorf("Description missing focus concept: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "Focus du moment") {
+		t.Errorf("Description should use 'Focus du moment' for warning urgency: %q", embed.Description)
+	}
+	if !strings.Contains(embed.Description, "à mi-chemin") {
+		t.Errorf("Description missing goal progress phrase: %q", embed.Description)
+	}
+	if embed.Color != 0xF5A623 {
+		t.Errorf("Color=%#x, want amber 0xF5A623", embed.Color)
+	}
+}
+
+func TestFormatOLMEmbed_FocusCriticalRedTitleAndColor(t *testing.T) {
+	snap := &OLMSnapshot{
+		DomainName:    "X",
+		Solid:         1,
+		FocusConcept:  "loops",
+		FocusReason:   "retention 25%",
+		FocusUrgency:  models.UrgencyCritical,
+		HasActionable: true,
+	}
+	embed := FormatOLMEmbed(snap)
+	if embed.Title != "🚨 État — un concept à reprendre vite" {
+		t.Errorf("Title=%q", embed.Title)
+	}
+	if embed.Color != 0xFF6B6B {
+		t.Errorf("Color=%#x, want red 0xFF6B6B", embed.Color)
 	}
 }

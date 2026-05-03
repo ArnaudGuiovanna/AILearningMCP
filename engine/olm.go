@@ -16,6 +16,8 @@ package engine
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"tutor-mcp/algorithms"
@@ -161,6 +163,21 @@ func BuildOLMSnapshot(store *db.Store, learnerID, domainID string) (*OLMSnapshot
 	bias, _ := store.GetCalibrationBias(learnerID, 20)
 	snap.CalibrationBias = bias
 
+	// KST progress: fraction of active concepts that are Solid.
+	totalConcepts := snap.Solid + snap.InProgress + snap.Fragile + snap.NotStarted
+	if totalConcepts > 0 {
+		snap.KSTProgress = float64(snap.Solid) / float64(totalConcepts)
+	}
+
+	// HasActionable: a focus exists OR a metacog signal warrants surfacing.
+	const calibrationActionableThreshold = 1.5
+	if snap.FocusConcept != "" ||
+		math.Abs(snap.CalibrationBias) > calibrationActionableThreshold ||
+		snap.AutonomyTrend == "declining" ||
+		snap.AffectTrend == "declining" {
+		snap.HasActionable = true
+	}
+
 	return snap, nil
 }
 
@@ -255,4 +272,107 @@ func formatFocusReason(a models.Alert) string {
 		return fmt.Sprintf("plateau %d sessions", a.SessionsStalled)
 	}
 	return a.RecommendedAction
+}
+
+// FormatOLMEmbed renders an OLMSnapshot as a Discord embed, used by the
+// scheduler when no LLM-authored copy is queued. The text is intentionally
+// factual: distribution + focus + (one) metacognitive line if active +
+// goal progress phrase. No pep talk.
+func FormatOLMEmbed(snap *OLMSnapshot) DiscordEmbed {
+	title := "🧭 État du moment"
+	color := 0xEB459E // pink (info / vide)
+	switch snap.FocusUrgency {
+	case models.UrgencyCritical:
+		title = "🚨 État — un concept à reprendre vite"
+		color = 0xFF6B6B
+	case models.UrgencyWarning:
+		color = 0xF5A623
+	}
+
+	var lines []string
+
+	buckets := compactBuckets(snap)
+	if buckets != "" {
+		lines = append(lines, fmt.Sprintf("Sur **%s** :\n%s.", snap.DomainName, buckets))
+	}
+
+	if snap.FocusConcept != "" {
+		var prefix string
+		switch snap.FocusUrgency {
+		case models.UrgencyCritical:
+			prefix = "Un concept à reprendre vite"
+		case models.UrgencyWarning:
+			prefix = "Focus du moment"
+		default:
+			prefix = "Prochain palier"
+		}
+		lines = append(lines, fmt.Sprintf("%s : **%s** (%s).", prefix, snap.FocusConcept, snap.FocusReason))
+	}
+
+	if line := metacogLine(snap); line != "" {
+		lines = append(lines, line)
+	}
+
+	if snap.PersonalGoal != "" {
+		lines = append(lines, fmt.Sprintf("Objectif \"%s\" : %s.", snap.PersonalGoal, progressPhrase(snap.KSTProgress)))
+	}
+
+	return DiscordEmbed{
+		Title:       title,
+		Description: strings.Join(lines, "\n\n"),
+		Color:       color,
+	}
+}
+
+// DiscordEmbed mirrors engine/scheduler.go's discordEmbed but is exported so
+// tests in this file (and the scheduler) can both build embeds. The scheduler
+// converts to its private discordEmbed by direct struct copy (same shape).
+type DiscordEmbed struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Color       int    `json:"color"`
+}
+
+func compactBuckets(snap *OLMSnapshot) string {
+	parts := []string{}
+	if snap.Solid > 0 {
+		parts = append(parts, fmt.Sprintf("%d solides", snap.Solid))
+	}
+	if snap.InProgress > 0 {
+		parts = append(parts, fmt.Sprintf("%d en cours", snap.InProgress))
+	}
+	if snap.Fragile > 0 {
+		parts = append(parts, fmt.Sprintf("%d fragiles", snap.Fragile))
+	}
+	if snap.NotStarted > 0 {
+		parts = append(parts, fmt.Sprintf("%d pas commencés", snap.NotStarted))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func metacogLine(snap *OLMSnapshot) string {
+	if snap.CalibrationBias > 1.5 {
+		return "Tu sur-estimes un peu tes acquis depuis 3 sessions — quelques exercices à froid t'aideront à recalibrer."
+	}
+	if snap.CalibrationBias < -1.5 {
+		return "Tu sous-estimes un peu tes acquis — tu en sais plus que tu crois."
+	}
+	if snap.AutonomyTrend == "declining" {
+		return "Tu t'appuies un peu plus sur les hints récemment — tente quelques exercices sans aide pour voir."
+	}
+	if snap.AffectTrend == "declining" {
+		return "Les 3 dernières sessions ont été éprouvantes — n'hésite pas à alléger ou faire une pause."
+	}
+	return ""
+}
+
+func progressPhrase(p float64) string {
+	switch {
+	case p < 0.30:
+		return "tu démarres"
+	case p < 0.70:
+		return "à mi-chemin"
+	default:
+		return "presque arrivé"
+	}
 }
