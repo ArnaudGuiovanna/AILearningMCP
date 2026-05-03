@@ -149,9 +149,11 @@
 
     <!-- TABS (premium, animated underline) -->
     <div class="tabs anim-fade-up anim-fade-up-2" role="tablist">
-      <button class="tab-link tab-active" role="tab" aria-selected="true">Cette session</button>
-      <button class="tab-link" role="tab" aria-selected="false" aria-disabled="true" title="à venir" disabled>Modèle global</button>
+      <button id="tab-session" class="tab-link tab-active" role="tab" aria-selected="true" aria-controls="panel-session">Cette session</button>
+      <button id="tab-global" class="tab-link" role="tab" aria-selected="false" aria-disabled="true" aria-controls="panel-global" title="à venir" disabled>Modèle global</button>
     </div>
+
+    <div id="panel-session" role="tabpanel" aria-labelledby="tab-session">
 
     <!-- LEGEND -->
     <div class="anim-fade-up anim-fade-up-2" style="display:flex;gap:18px;align-items:center;margin-bottom:14px;font-family:ui-monospace,'JetBrains Mono',monospace;font-size:10px;letter-spacing:1.3px;color:var(--cream-500);text-transform:uppercase;flex-wrap:wrap;">
@@ -207,6 +209,9 @@
         </div>
       </div>
     </div>
+
+    </div><!-- /panel-session -->
+    <div id="panel-global" role="tabpanel" aria-labelledby="tab-global" hidden></div>
 
   </div>
 
@@ -284,6 +289,8 @@
       for (const e of edges) {
         if (e.from === cur) {
           const candidate = (level[cur] || 0) + 1;
+          const MAX_LEVEL = 100; // hard cap against pathological cycles
+          if (candidate > MAX_LEVEL) continue;
           if (level[e.to] === undefined || level[e.to] < candidate) {
             level[e.to] = candidate;
             queue.push(e.to);
@@ -330,7 +337,7 @@
       fill: s.fill,
       stroke: s.stroke,
       "stroke-width": String(s.strokeWidth),
-      class: (n.state === "focus") ? "halo" : "",
+      class: (n.state === "focus") ? "focus-halo" : "",
     });
     if (s.dasharray) circle.setAttribute("stroke-dasharray", s.dasharray);
     g.appendChild(circle);
