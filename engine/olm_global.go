@@ -10,9 +10,18 @@ package engine
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"tutor-mcp/db"
+)
+
+const (
+	// sparklineWindow is the number of samples kept for calibration, autonomy
+	// and satisfaction sparklines on the cockpit "Modèle global" tab.
+	sparklineWindow = 30
+	// recentEventDays is the look-back window for the recent events timeline.
+	recentEventDays = 7
 )
 
 // TimePoint is a daily aggregate sample (for sparklines).
@@ -73,7 +82,10 @@ func BuildGlobalOLMSnapshot(store *db.Store, learnerID string) (*GlobalOLMSnapsh
 	for _, d := range domains {
 		snap, err := BuildOLMSnapshot(store, learnerID, d.ID)
 		if err != nil {
-			continue // skip a broken domain rather than fail the whole view
+			// Skip a broken domain rather than fail the whole view, but log it so
+			// the failure is visible.
+			slog.Warn("global olm: skip domain", "domain", d.ID, "learner", learnerID, "err", err)
+			continue
 		}
 		g.Domains = append(g.Domains, DomainSummary{
 			DomainID:     d.ID,
@@ -95,25 +107,28 @@ func BuildGlobalOLMSnapshot(store *db.Store, learnerID string) (*GlobalOLMSnapsh
 
 	g.Streak, _ = store.GetActivityStreak(learnerID)
 
-	// Calibration sparkline — last 30 samples.
-	if hist, err := store.GetCalibrationBiasHistory(learnerID, 30); err == nil {
+	// Calibration sparkline — last 30 samples. GetCalibrationBiasHistory returns
+	// DESC; reverse-index assigns oldest→newest days for the X-axis.
+	if hist, err := store.GetCalibrationBiasHistory(learnerID, sparklineWindow); err == nil {
 		for i, v := range hist {
 			day := time.Now().UTC().AddDate(0, 0, -(len(hist)-1-i)).Format("2006-01-02")
 			g.CalibrationHistory = append(g.CalibrationHistory, TimePoint{Day: day, Value: v})
 		}
 	}
 
-	// Autonomy + satisfaction — derived from last 30 affects (newest-first DESC).
-	affects, _ := store.GetRecentAffectStates(learnerID, 30)
-	for i := len(affects) - 1; i >= 0; i-- {
-		af := affects[i]
-		day := af.CreatedAt.UTC().Format("2006-01-02")
-		g.AutonomyHistory = append(g.AutonomyHistory, TimePoint{Day: day, Value: af.AutonomyScore})
-		g.SatisfactionHistory = append(g.SatisfactionHistory, TimePoint{Day: day, Value: float64(af.Satisfaction)})
+	// Autonomy + satisfaction sparklines — best-effort UI enrichment, empty on err.
+	if affects, err := store.GetRecentAffectStates(learnerID, sparklineWindow); err == nil {
+		for i := len(affects) - 1; i >= 0; i-- {
+			af := affects[i]
+			day := af.CreatedAt.UTC().Format("2006-01-02")
+			g.AutonomyHistory = append(g.AutonomyHistory, TimePoint{Day: day, Value: af.AutonomyScore})
+			g.SatisfactionHistory = append(g.SatisfactionHistory, TimePoint{Day: day, Value: float64(af.Satisfaction)})
+		}
 	}
 
-	// Recent events — past 7 days.
-	since := time.Now().UTC().AddDate(0, 0, -7)
+	// Recent events — past 7 days. GetRecentLearnerEvents returns DESC (newest-first),
+	// which matches the cockpit timeline's "newest at top" UX.
+	since := time.Now().UTC().AddDate(0, 0, -recentEventDays)
 	if rawEvents, err := store.GetRecentLearnerEvents(learnerID, since); err == nil {
 		for _, re := range rawEvents {
 			g.RecentEvents = append(g.RecentEvents, LearnerEvent{

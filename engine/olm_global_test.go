@@ -67,3 +67,38 @@ func TestBuildGlobalOLMSnapshot_NoDomain_ReturnsEmpty(t *testing.T) {
 		t.Errorf("expected empty global snapshot, got %+v", g)
 	}
 }
+
+func TestBuildGlobalOLMSnapshot_PopulatesSparklinesAndEvents(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	seedDomain(t, raw, "L1", "math", []string{"a"}, nil, false)
+	seedConceptState(t, store, "L1", "a", 0.90, "review") // → mastery_threshold event
+
+	now := time.Now().UTC()
+	// Seed one interaction today so streak >= 1 (and streak_start event fires).
+	if _, err := raw.Exec(
+		`INSERT INTO interactions (learner_id, concept, activity_type, success, created_at) VALUES (?,?,?,?,?)`,
+		"L1", "a", "RECALL", 1, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := BuildGlobalOLMSnapshot(store, "L1")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if g.Streak < 1 {
+		t.Errorf("Streak=%d, want >=1", g.Streak)
+	}
+	if len(g.RecentEvents) == 0 {
+		t.Errorf("RecentEvents empty — expected mastery_threshold from p_mastery=0.90")
+	}
+	// Day format check on whichever sparkline is non-empty (calibration is empty
+	// without a calibration_id row, but RecentEvents.At should be a real time).
+	if len(g.RecentEvents) > 0 {
+		got := g.RecentEvents[0].At
+		if got.IsZero() {
+			t.Errorf("RecentEvents[0].At zero, want non-zero")
+		}
+	}
+}
