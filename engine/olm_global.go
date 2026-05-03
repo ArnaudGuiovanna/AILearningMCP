@@ -8,7 +8,12 @@
 
 package engine
 
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"tutor-mcp/db"
+)
 
 // TimePoint is a daily aggregate sample (for sparklines).
 type TimePoint struct {
@@ -53,4 +58,69 @@ type GlobalOLMSnapshot struct {
 	SatisfactionHistory []TimePoint     `json:"satisfaction_history"`
 	Goals               []GoalProgress  `json:"goals"`
 	RecentEvents        []LearnerEvent  `json:"recent_events"`
+}
+
+// BuildGlobalOLMSnapshot aggregates across all non-archived domains for a
+// learner — powers the cockpit's "Modèle global" tab.
+func BuildGlobalOLMSnapshot(store *db.Store, learnerID string) (*GlobalOLMSnapshot, error) {
+	g := &GlobalOLMSnapshot{}
+
+	domains, err := store.GetDomainsByLearner(learnerID, false /*includeArchived*/)
+	if err != nil {
+		return nil, fmt.Errorf("global olm: list domains: %w", err)
+	}
+
+	for _, d := range domains {
+		snap, err := BuildOLMSnapshot(store, learnerID, d.ID)
+		if err != nil {
+			continue // skip a broken domain rather than fail the whole view
+		}
+		g.Domains = append(g.Domains, DomainSummary{
+			DomainID:     d.ID,
+			DomainName:   d.Name,
+			PersonalGoal: d.PersonalGoal,
+			Solid:        snap.Solid,
+			InProgress:   snap.InProgress,
+			Fragile:      snap.Fragile,
+			NotStarted:   snap.NotStarted,
+			KSTProgress:  snap.KSTProgress,
+		})
+		g.TotalSolid += snap.Solid
+		g.Goals = append(g.Goals, GoalProgress{
+			DomainID:     d.ID,
+			PersonalGoal: d.PersonalGoal,
+			Progress:     snap.KSTProgress,
+		})
+	}
+
+	g.Streak, _ = store.GetActivityStreak(learnerID)
+
+	// Calibration sparkline — last 30 samples.
+	if hist, err := store.GetCalibrationBiasHistory(learnerID, 30); err == nil {
+		for i, v := range hist {
+			day := time.Now().UTC().AddDate(0, 0, -(len(hist)-1-i)).Format("2006-01-02")
+			g.CalibrationHistory = append(g.CalibrationHistory, TimePoint{Day: day, Value: v})
+		}
+	}
+
+	// Autonomy + satisfaction — derived from last 30 affects (newest-first DESC).
+	affects, _ := store.GetRecentAffectStates(learnerID, 30)
+	for i := len(affects) - 1; i >= 0; i-- {
+		af := affects[i]
+		day := af.CreatedAt.UTC().Format("2006-01-02")
+		g.AutonomyHistory = append(g.AutonomyHistory, TimePoint{Day: day, Value: af.AutonomyScore})
+		g.SatisfactionHistory = append(g.SatisfactionHistory, TimePoint{Day: day, Value: float64(af.Satisfaction)})
+	}
+
+	// Recent events — past 7 days.
+	since := time.Now().UTC().AddDate(0, 0, -7)
+	if rawEvents, err := store.GetRecentLearnerEvents(learnerID, since); err == nil {
+		for _, re := range rawEvents {
+			g.RecentEvents = append(g.RecentEvents, LearnerEvent{
+				At: re.At, Kind: re.Kind, Message: re.Message, Concept: re.Concept,
+			})
+		}
+	}
+
+	return g, nil
 }
