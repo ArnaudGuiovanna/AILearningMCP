@@ -108,6 +108,7 @@ func RegisterTools(server *mcp.Server, deps *Deps) {
 	registerRecordCalibrationResult(server, deps)
 	registerGetAutonomyMetrics(server, deps)
 	registerGetMetacognitiveMirror(server, deps)
+	registerGetOLMSnapshot(server, deps)
 	registerFeynmanChallenge(server, deps)
 	registerTransferChallenge(server, deps)
 	registerRecordTransferResult(server, deps)
