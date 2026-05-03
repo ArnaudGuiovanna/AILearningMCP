@@ -512,3 +512,99 @@ func (s *Scheduler) doWithRetry(url string, body []byte) error {
 	}
 	return lastErr
 }
+
+// ─── OLM (Open Learner Model) Daily Dispatch ────────────────────────────────
+
+// sendOLM dispatches the daily Open Learner Model webhook at 13h UTC for each
+// active learner with at least one actionable domain. Per-domain dispatch
+// (cap 3 embeds) lets a learner with multiple domains see all relevant states
+// in one Discord message. Falls back to FormatOLMEmbed when no LLM-authored
+// message is queued.
+func (s *Scheduler) sendOLM() {
+	learners, err := s.store.GetActiveLearners()
+	if err != nil {
+		s.logger.Error("scheduler: olm get learners", "err", err)
+		return
+	}
+	now := time.Now().UTC()
+
+	for _, learner := range learners {
+		if learner.WebhookURL == "" {
+			continue
+		}
+		avail, _ := s.store.GetAvailability(learner.ID)
+		if avail != nil && avail.DoNotDisturb {
+			continue
+		}
+		if sent, _ := s.store.WasAlertSentToday(learner.ID, "OLM"); sent {
+			continue
+		}
+
+		domains, err := s.store.GetDomainsByLearner(learner.ID, false /*includeArchived*/)
+		if err != nil {
+			s.logger.Error("scheduler: olm list domains", "err", err, "learner", learner.ID)
+			continue
+		}
+
+		var embeds []discordEmbed
+		for _, d := range domains {
+			if len(embeds) >= 3 {
+				break
+			}
+			snap, err := BuildOLMSnapshot(s.store, learner.ID, d.ID)
+			if err != nil {
+				s.logger.Warn("scheduler: olm build", "err", err, "learner", learner.ID, "domain", d.ID)
+				continue
+			}
+			if !snap.HasActionable {
+				continue
+			}
+
+			kind := "olm:" + d.ID
+			item, _ := s.store.DequeueNextPending(learner.ID, kind, now, 30*time.Minute)
+			if item != nil && item.Content != "" {
+				embeds = append(embeds, embedFromQueueItem(item, snap.FocusUrgency))
+				_ = s.store.MarkWebhookSent(item.ID, now)
+			} else {
+				embeds = append(embeds, fromExportedEmbed(FormatOLMEmbed(snap)))
+			}
+		}
+
+		if len(embeds) == 0 {
+			continue
+		}
+
+		if err := s.sendDiscordEmbed(learner.WebhookURL, discordPayload{Embeds: embeds}); err != nil {
+			s.logger.Error("scheduler: olm webhook", "err", err, "learner", learner.ID)
+			continue
+		}
+		_ = s.store.CreateScheduledAlert(learner.ID, "OLM", "", now)
+		s.logger.Info("scheduler: olm dispatched", "learner", learner.ID, "embeds", len(embeds))
+	}
+}
+
+// embedFromQueueItem renders a queued LLM-authored OLM message. The content
+// is used as-is for Description; the title/color come from FocusUrgency for
+// visual consistency with the Go fallback.
+func embedFromQueueItem(item *models.WebhookQueueItem, urgency models.AlertUrgency) discordEmbed {
+	title := "🧭 État du moment"
+	color := 0xEB459E
+	switch urgency {
+	case models.UrgencyCritical:
+		title = "🚨 État — un concept à reprendre vite"
+		color = 0xFF6B6B
+	case models.UrgencyWarning:
+		color = 0xF5A623
+	}
+	return discordEmbed{
+		Title:       title,
+		Description: item.Content,
+		Color:       color,
+	}
+}
+
+// fromExportedEmbed converts engine.DiscordEmbed (used by FormatOLMEmbed for
+// testability) to scheduler.discordEmbed. Same shape; plain field copy.
+func fromExportedEmbed(e DiscordEmbed) discordEmbed {
+	return discordEmbed{Title: e.Title, Description: e.Description, Color: e.Color}
+}

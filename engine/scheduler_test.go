@@ -1,7 +1,13 @@
 package engine
 
 import (
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"tutor-mcp/db"
 )
@@ -28,5 +34,78 @@ func TestIsSafeWebhookURL(t *testing.T) {
 				t.Errorf("IsSafeWebhookURL(%q) = %v, want %v", tc.url, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSendOLM_DispatchesFallbackWhenQueueEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got := string(body)
+		if !strings.Contains(got, "Focus du moment") &&
+			!strings.Contains(got, "Prochain palier") &&
+			!strings.Contains(got, "reprendre vite") {
+			t.Errorf("expected an OLM body, got: %s", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	prev := safeWebhookURL
+	safeWebhookURL = func(_ string) bool { return true }
+	defer func() { safeWebhookURL = prev }()
+
+	store, raw := newOLMTestStore(t)
+	if _, err := raw.Exec(
+		`INSERT INTO learners (id, email, password_hash, objective, webhook_url, last_active, created_at) VALUES (?,?,?,?,?,?,?)`,
+		"L1", "l1@t.com", "h", "obj", srv.URL, time.Now().UTC(), time.Now().UTC(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b"},
+		map[string][]string{"b": {"a"}},
+		false,
+	)
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sched := &Scheduler{store: store, logger: logger, client: &http.Client{Timeout: 2 * time.Second}}
+
+	sched.sendOLM()
+
+	sent, _ := store.WasAlertSentToday("L1", "OLM")
+	if !sent {
+		t.Errorf("OLM dispatch should mark sent today")
+	}
+}
+
+func TestSendOLM_SkipsWhenNothingActionable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("scheduler should NOT post when nothing is actionable")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	prev := safeWebhookURL
+	safeWebhookURL = func(_ string) bool { return true }
+	defer func() { safeWebhookURL = prev }()
+
+	store, raw := newOLMTestStore(t)
+	if _, err := raw.Exec(
+		`INSERT INTO learners (id, email, password_hash, objective, webhook_url, last_active, created_at) VALUES (?,?,?,?,?,?,?)`,
+		"L1", "l1@t.com", "h", "obj", srv.URL, time.Now().UTC(), time.Now().UTC(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	seedDomain(t, raw, "L1", "math", []string{"a"}, nil, false)
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sched := &Scheduler{store: store, logger: logger, client: &http.Client{Timeout: 2 * time.Second}}
+	sched.sendOLM()
+
+	sent, _ := store.WasAlertSentToday("L1", "OLM")
+	if sent {
+		t.Errorf("nothing actionable should NOT mark OLM as sent")
 	}
 }
