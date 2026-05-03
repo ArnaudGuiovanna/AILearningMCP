@@ -130,15 +130,8 @@ func TestCockpitResource_Registered(t *testing.T) {
 		}
 		t.Errorf("expected HTML content, got: %q", preview)
 	}
-	wantMIME := []string{"text/html", "text/html;profile=mcp-app"}
-	matched := false
-	for _, m := range wantMIME {
-		if res.Contents[0].MIMEType == m {
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		t.Errorf("MIMEType=%q, want one of %v", res.Contents[0].MIMEType, wantMIME)
+	const wantMIME = "text/html;profile=mcp-app"
+	if res.Contents[0].MIMEType != wantMIME {
+		t.Errorf("MIMEType=%q, want %q", res.Contents[0].MIMEType, wantMIME)
 	}
 }
