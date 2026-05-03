@@ -61,3 +61,60 @@ func TestOLMGraph_TypesCompile(t *testing.T) {
 		t.Errorf("unexpected shape: %+v", g)
 	}
 }
+
+func TestBuildOLMGraph_NodeStatesAndEdges(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b", "c", "d"},
+		map[string][]string{"b": {"a"}, "c": {"b"}, "d": {"c"}},
+		false,
+	)
+	// a Solid, b Focus (frontier), c+d NotStarted.
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+
+	g, err := BuildOLMGraph(store, "L1", "")
+	if err != nil {
+		t.Fatalf("BuildOLMGraph: %v", err)
+	}
+	if g.DomainName != "math" {
+		t.Errorf("DomainName=%q, want math", g.DomainName)
+	}
+	// 4 concepts exposed
+	if len(g.Concepts) != 4 {
+		t.Fatalf("Concepts=%d, want 4", len(g.Concepts))
+	}
+	byName := map[string]GraphNode{}
+	for _, n := range g.Concepts {
+		byName[n.Concept] = n
+	}
+	if byName["a"].State != NodeSolid {
+		t.Errorf("a.State=%q, want solid", byName["a"].State)
+	}
+	if byName["b"].State != NodeFocus {
+		t.Errorf("b.State=%q, want focus (frontier)", byName["b"].State)
+	}
+	if byName["c"].State != NodeNotStarted || byName["d"].State != NodeNotStarted {
+		t.Errorf("c/d not_started expected, got c=%q d=%q", byName["c"].State, byName["d"].State)
+	}
+	// Edges: a→b active (target b is focus), b→c future, c→d future.
+	if len(g.Edges) != 3 {
+		t.Fatalf("Edges=%d, want 3", len(g.Edges))
+	}
+	edgeFromTo := map[string]EdgeType{}
+	for _, e := range g.Edges {
+		edgeFromTo[e.From+"->"+e.To] = e.Type
+	}
+	if edgeFromTo["a->b"] != EdgeActive {
+		t.Errorf("a->b type=%q, want active (target is focus)", edgeFromTo["a->b"])
+	}
+	if edgeFromTo["b->c"] != EdgeFuture {
+		t.Errorf("b->c type=%q, want future", edgeFromTo["b->c"])
+	}
+	if edgeFromTo["c->d"] != EdgeFuture {
+		t.Errorf("c->d type=%q, want future", edgeFromTo["c->d"])
+	}
+	if g.FocusConcept != "b" {
+		t.Errorf("FocusConcept=%q, want b", g.FocusConcept)
+	}
+}

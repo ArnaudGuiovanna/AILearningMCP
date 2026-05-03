@@ -9,6 +9,90 @@
 
 package engine
 
+import (
+	"fmt"
+
+	"tutor-mcp/algorithms"
+	"tutor-mcp/db"
+	"tutor-mcp/models"
+)
+
+// BuildOLMGraph builds an OLMGraph for the given (learner, domain). If domainID
+// is empty, the most recently created non-archived domain is used.
+//
+// It calls BuildOLMSnapshot for the mastery distribution + focus + metacog +
+// KST progress, then enriches with per-concept ConceptState data and classifies
+// each prerequisite edge.
+func BuildOLMGraph(store *db.Store, learnerID, domainID string) (*OLMGraph, error) {
+	snap, err := BuildOLMSnapshot(store, learnerID, domainID)
+	if err != nil {
+		return nil, err
+	}
+	domain, err := resolveActiveDomain(store, learnerID, snap.DomainID)
+	if err != nil {
+		return nil, fmt.Errorf("olm graph: resolve domain: %w", err)
+	}
+
+	// Pull all states once (graph stays under O(N) for the learner).
+	allStates, err := store.GetConceptStatesByLearner(learnerID)
+	if err != nil {
+		return nil, fmt.Errorf("olm graph: get states: %w", err)
+	}
+	stateByConcept := make(map[string]*models.ConceptState, len(allStates))
+	for _, cs := range allStates {
+		stateByConcept[cs.Concept] = cs
+	}
+
+	// Build nodes — focus state overrides whatever NodeClassify returns.
+	nodes := make([]GraphNode, 0, len(domain.Graph.Concepts))
+	for _, concept := range domain.Graph.Concepts {
+		cs := stateByConcept[concept]
+		state := NodeClassify(cs)
+		if concept == snap.FocusConcept {
+			state = NodeFocus
+		}
+		n := GraphNode{Concept: concept, State: state}
+		if cs != nil {
+			n.PMastery = cs.PMastery
+			n.Retention = algorithms.Retrievability(cs.ElapsedDays, cs.Stability)
+			n.Reps = cs.Reps
+			n.Lapses = cs.Lapses
+			n.DaysSince = cs.ElapsedDays
+		}
+		nodes = append(nodes, n)
+	}
+
+	// Build edges — classification per edge:
+	//   target == focus  → active
+	//   both endpoints are NodeSolid → traversed
+	//   otherwise → future
+	stateByName := make(map[string]NodeState, len(nodes))
+	for _, n := range nodes {
+		stateByName[n.Concept] = n.State
+	}
+	var edges []GraphEdge
+	for to, prereqs := range domain.Graph.Prerequisites {
+		for _, from := range prereqs {
+			et := EdgeFuture
+			if to == snap.FocusConcept {
+				et = EdgeActive
+			} else if stateByName[from] == NodeSolid && stateByName[to] == NodeSolid {
+				et = EdgeTraversed
+			}
+			edges = append(edges, GraphEdge{From: from, To: to, Type: et})
+		}
+	}
+
+	streak, _ := store.GetActivityStreak(learnerID)
+
+	return &OLMGraph{
+		OLMSnapshot: snap,
+		Concepts:    nodes,
+		Edges:       edges,
+		Streak:      streak,
+	}, nil
+}
+
 // EdgeType classifies a prerequisite edge by the state of its endpoints.
 type EdgeType string
 
