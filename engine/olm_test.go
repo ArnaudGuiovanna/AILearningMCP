@@ -131,3 +131,65 @@ func TestBuildOLMSnapshot_MasteryBuckets(t *testing.T) {
 		t.Errorf("NotStarted=%d (incl. concept with no state), want 2", snap.NotStarted)
 	}
 }
+
+func TestBuildOLMSnapshot_FocusForgettingCritical(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b"},
+		map[string][]string{"b": {"a"}},
+		false,
+	)
+	// 'a' is in deep forgetting (low retention).
+	cs := models.NewConceptState("L1", "a")
+	cs.PMastery = 0.40
+	cs.Stability = 1.0
+	cs.ElapsedDays = 30
+	cs.Reps = 5
+	cs.CardState = "review"
+	now := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	cs.LastReview = &now
+	if err := store.UpsertConceptState(cs); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := BuildOLMSnapshot(store, "L1", "")
+	if err != nil {
+		t.Fatalf("BuildOLMSnapshot: %v", err)
+	}
+	if snap.FocusConcept != "a" {
+		t.Errorf("FocusConcept=%q, want a", snap.FocusConcept)
+	}
+	if snap.FocusUrgency != models.UrgencyCritical && snap.FocusUrgency != models.UrgencyWarning {
+		t.Errorf("FocusUrgency=%q, want critical or warning (FORGETTING)", snap.FocusUrgency)
+	}
+	if snap.FocusReason == "" {
+		t.Error("FocusReason should be non-empty (retention …%)")
+	}
+}
+
+func TestBuildOLMSnapshot_FocusFallsBackToFrontier(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b", "c"},
+		map[string][]string{"b": {"a"}, "c": {"b"}},
+		false,
+	)
+	// 'a' mastered → 'b' is on the frontier. 'b' has no state yet.
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+
+	snap, err := BuildOLMSnapshot(store, "L1", "")
+	if err != nil {
+		t.Fatalf("BuildOLMSnapshot: %v", err)
+	}
+	if snap.FocusConcept != "b" {
+		t.Errorf("FocusConcept=%q, want b (frontier)", snap.FocusConcept)
+	}
+	if snap.FocusUrgency != models.UrgencyInfo {
+		t.Errorf("FocusUrgency=%q, want info (frontier fallback)", snap.FocusUrgency)
+	}
+	if snap.FocusReason != "prochain palier" {
+		t.Errorf("FocusReason=%q, want 'prochain palier'", snap.FocusReason)
+	}
+}

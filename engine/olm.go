@@ -16,6 +16,7 @@ package engine
 
 import (
 	"fmt"
+	"time"
 
 	"tutor-mcp/algorithms"
 	"tutor-mcp/db"
@@ -105,6 +106,50 @@ func BuildOLMSnapshot(store *db.Store, learnerID, domainID string) (*OLMSnapshot
 		snap.InProgress++
 	}
 
+	// Focus: alerts (forgetting, ZPD, plateau) win over frontier fallback.
+	// Filter states/interactions to this domain's concepts only — alerts on
+	// concepts from other domains are not relevant to this OLM.
+	domainConceptSet := make(map[string]bool, len(domain.Graph.Concepts))
+	for _, c := range domain.Graph.Concepts {
+		domainConceptSet[c] = true
+	}
+	var domainStates []*models.ConceptState
+	for _, cs := range allStates {
+		if domainConceptSet[cs.Concept] {
+			domainStates = append(domainStates, cs)
+		}
+	}
+	recent, _ := store.GetRecentInteractionsByLearner(learnerID, 20)
+	var domainInteractions []*models.Interaction
+	for _, in := range recent {
+		if domainConceptSet[in.Concept] {
+			domainInteractions = append(domainInteractions, in)
+		}
+	}
+	alerts := ComputeAlerts(domainStates, domainInteractions, time.Time{})
+
+	if focus := pickFocus(alerts); focus != nil {
+		snap.FocusConcept = focus.Concept
+		snap.FocusReason = formatFocusReason(*focus)
+		snap.FocusUrgency = focus.Urgency
+	} else {
+		// Frontier fallback.
+		mastery := make(map[string]float64, len(domainStates))
+		for _, cs := range domainStates {
+			mastery[cs.Concept] = cs.PMastery
+		}
+		graph := algorithms.KSTGraph{
+			Concepts:      domain.Graph.Concepts,
+			Prerequisites: domain.Graph.Prerequisites,
+		}
+		frontier := algorithms.ComputeFrontier(graph, mastery)
+		if len(frontier) > 0 {
+			snap.FocusConcept = frontier[0]
+			snap.FocusReason = "prochain palier"
+			snap.FocusUrgency = models.UrgencyInfo
+		}
+	}
+
 	return snap, nil
 }
 
@@ -133,4 +178,56 @@ func resolveActiveDomain(store *db.Store, learnerID, domainID string) (*models.D
 		return nil, fmt.Errorf("olm: domain %s is archived", domainID)
 	}
 	return d, nil
+}
+
+// pickFocus returns the most actionable alert by descending priority:
+// FORGETTING (critical first) > ZPD_DRIFT > PLATEAU. Returns nil if no
+// such alert is present. Other alert types (e.g., MASTERY_READY, OVERLOAD)
+// are not focus-worthy for the OLM.
+func pickFocus(alerts []models.Alert) *models.Alert {
+	var critical, warning, plateau, zpd *models.Alert
+	for i := range alerts {
+		a := &alerts[i]
+		switch a.Type {
+		case models.AlertForgetting:
+			if a.Urgency == models.UrgencyCritical && critical == nil {
+				critical = a
+			} else if warning == nil {
+				warning = a
+			}
+		case models.AlertZPDDrift:
+			if zpd == nil {
+				zpd = a
+			}
+		case models.AlertPlateau:
+			if plateau == nil {
+				plateau = a
+			}
+		}
+	}
+	switch {
+	case critical != nil:
+		return critical
+	case warning != nil:
+		return warning
+	case zpd != nil:
+		return zpd
+	case plateau != nil:
+		return plateau
+	}
+	return nil
+}
+
+// formatFocusReason produces the short reason string shown next to the focus
+// concept in the OLM message.
+func formatFocusReason(a models.Alert) string {
+	switch a.Type {
+	case models.AlertForgetting:
+		return fmt.Sprintf("retention %.0f%%", a.Retention*100)
+	case models.AlertZPDDrift:
+		return fmt.Sprintf("%.0f%% d'erreurs récentes", a.ErrorRate*100)
+	case models.AlertPlateau:
+		return fmt.Sprintf("plateau %d sessions", a.SessionsStalled)
+	}
+	return a.RecommendedAction
 }
