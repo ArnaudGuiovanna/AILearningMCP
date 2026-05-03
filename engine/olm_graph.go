@@ -83,6 +83,7 @@ func BuildOLMGraph(store *db.Store, learnerID, domainID string) (*OLMGraph, erro
 		}
 	}
 
+	// Streak enriches the UI only — DB error means zero, which is safe.
 	streak, _ := store.GetActivityStreak(learnerID)
 
 	return &OLMGraph{

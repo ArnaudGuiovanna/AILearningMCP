@@ -118,3 +118,33 @@ func TestBuildOLMGraph_NodeStatesAndEdges(t *testing.T) {
 		t.Errorf("FocusConcept=%q, want b", g.FocusConcept)
 	}
 }
+
+func TestBuildOLMGraph_EdgeTraversed(t *testing.T) {
+	store, raw := newOLMTestStore(t)
+	seedLearner(t, raw, "L1")
+	// 3-concept chain: a→b→c. a, b, c all Solid → focus is empty (no frontier).
+	// Edge a→b: both endpoints Solid, target not focus → traversed.
+	seedDomain(t, raw, "L1", "math",
+		[]string{"a", "b", "c"},
+		map[string][]string{"b": {"a"}, "c": {"b"}},
+		false,
+	)
+	seedConceptState(t, store, "L1", "a", 0.90, "review")
+	seedConceptState(t, store, "L1", "b", 0.90, "review")
+	seedConceptState(t, store, "L1", "c", 0.90, "review")
+
+	g, err := BuildOLMGraph(store, "L1", "")
+	if err != nil {
+		t.Fatalf("BuildOLMGraph: %v", err)
+	}
+	edgeFromTo := map[string]EdgeType{}
+	for _, e := range g.Edges {
+		edgeFromTo[e.From+"->"+e.To] = e.Type
+	}
+	if edgeFromTo["a->b"] != EdgeTraversed {
+		t.Errorf("a->b type=%q, want traversed (both endpoints Solid, no focus)", edgeFromTo["a->b"])
+	}
+	if edgeFromTo["b->c"] != EdgeTraversed {
+		t.Errorf("b->c type=%q, want traversed (both endpoints Solid, no focus)", edgeFromTo["b->c"])
+	}
+}
