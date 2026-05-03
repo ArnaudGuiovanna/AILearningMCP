@@ -448,23 +448,22 @@ html, body {
   }
 
   // ─── Click handlers (delegation) ──────────────
-  // NOTE: per MCP Apps spec §Interactive Phase, tools/call from the View
-  // does NOT receive a JSON-RPC response. The host pushes the result back
-  // via ui/notifications/tool-result. So we send tools/call fire-and-forget
-  // and let the notification handler trigger any re-render.
+  // The View only signals INTENT via ui/update-model-context. Claude reads
+  // the context on the next turn and calls the appropriate MCP tool. The
+  // host then pushes ui/notifications/tool-result back to the View, which
+  // triggers re-render via the notification handler. This pattern avoids
+  // View-initiated tools/call which claude.ai does not forward over HTTP.
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-action="attack"]');
     if (btn && state.graph && state.graph.focus_concept) {
       btn.disabled = true;
       const concept = state.graph.focus_concept;
-      // Optimistic UI: surface the action immediately.
+      // Optimistic UI: surface the action immediately. The full activity
+      // arrives in the chat once Claude responds to the model-context cue.
       const card = document.getElementById('ck-focus-card');
-      card.appendChild(el('div', { class: 'ck-focus-activity', text: 'Activité transmise à Claude →' }));
-      // Fire the tool (notification path will deliver the result).
-      fireTool('learning_negotiation', { concept: concept });
-      // Push to Claude's model context so it picks up the j'attaque on next turn.
+      card.appendChild(el('div', { class: 'ck-focus-activity', text: "j'attaque '" + concept + "' — réponds-moi pour démarrer l'activité." }));
       pushModelContext(
-        "L'apprenant attaque le palier '" + concept + "'.",
+        "L'apprenant clique 'j'attaque' sur le palier '" + concept + "' depuis le cockpit. Démarre maintenant une activité courte sur ce concept (appelle learning_negotiation si pertinent puis présente le premier exercice). Évite de re-décrire le cockpit.",
         { focus_attacked: concept }
       );
       return;
@@ -473,9 +472,9 @@ html, body {
     if (row) {
       // row[data-kc=<concept>] identifies the KC
       const concept = row.getAttribute('data-kc');
-      fireTool('pick_concept', { concept: concept, domain_id: state.graph.domain_id });
+      showToast("KC '" + concept + "' demandé — réponds-moi pour confirmer.");
       pushModelContext(
-        "L'apprenant a choisi '" + concept + "' comme nouveau focus.",
+        "L'apprenant a cliqué le KC '" + concept + "' dans le cockpit pour en faire son nouveau focus. Appelle pick_concept(concept='" + concept + "') puis confirme brièvement, puis re-affiche le cockpit (open_cockpit) pour que la nouvelle focus card s'affiche.",
         { focus_changed_to: concept }
       );
     }
@@ -483,7 +482,11 @@ html, body {
 
   document.getElementById('ck-domain-select').addEventListener('change', (e) => {
     const did = e.target.value;
-    fireTool('get_olm_snapshot', { scope: 'graph', domain_id: did });
+    showToast("Changement de domaine demandé — réponds-moi pour confirmer.");
+    pushModelContext(
+      "L'apprenant a changé de domaine via le sélecteur du cockpit (domain_id='" + did + "'). Appelle open_cockpit(domain_id='" + did + "') pour rafraîchir l'iframe sur ce domaine.",
+      { domain_switched_to: did }
+    );
   });
 
   document.getElementById('ck-fullscreen-btn').addEventListener('click', () => {
