@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"tutor-mcp/algorithms"
 	"tutor-mcp/models"
 )
 
@@ -1136,14 +1137,13 @@ type RawLearnerEvent struct {
 	Concept string
 }
 
-// Mastery thresholds mirrored from the engine layer (algorithms.KSTMasteryThreshold = 0.70
-// and the engine.NodeClassify fragile boundary 0.30). Duplicated here because db cannot
-// import algorithms or engine without creating a cycle. If you tune either threshold,
-// update both packages in lockstep.
-const (
-	masteryThreshold = 0.70
-	fragileThreshold = 0.30
-)
+// fragileThreshold mirrors the engine.NodeClassify fragile boundary. The
+// mastered-cutoff was previously a duplicate const here (mirrored from
+// algorithms.KSTMasteryThreshold = 0.70), but it now reads through
+// algorithms.MasteryKST() at the call site to honour REGULATION_THRESHOLD.
+// The "db can't import algorithms" comment that lived here was outdated:
+// algorithms is a leaf package and motivation_queries.go already imports it.
+const fragileThreshold = 0.30
 
 // GetRecentLearnerEvents returns a chronological-DESC list of cognitive events
 // since `since`, used by the cockpit "Modèle global" timeline. Events are
@@ -1170,6 +1170,7 @@ func (s *Store) GetRecentLearnerEvents(learnerID string, since time.Time) ([]Raw
 		return nil, fmt.Errorf("get learner events: %w", err)
 	}
 	defer rows.Close()
+	masteryKST := algorithms.MasteryKST()
 	for rows.Next() {
 		var concept string
 		var mastery float64
@@ -1177,7 +1178,7 @@ func (s *Store) GetRecentLearnerEvents(learnerID string, since time.Time) ([]Raw
 		if err := rows.Scan(&concept, &mastery, &at); err != nil {
 			return nil, fmt.Errorf("scan event row: %w", err)
 		}
-		if mastery >= masteryThreshold {
+		if mastery >= masteryKST {
 			events = append(events, RawLearnerEvent{
 				At: at, Kind: "mastery_threshold", Concept: concept,
 				Message: fmt.Sprintf("%s atteint le seuil de maîtrise", concept),

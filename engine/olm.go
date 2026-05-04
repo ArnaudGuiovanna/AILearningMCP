@@ -49,7 +49,7 @@ const (
 //
 // Rules (in order):
 //   - nil OR CardState == "new"             → NotStarted
-//   - PMastery >= KSTMasteryThreshold (0.70) → Solid
+//   - PMastery >= MasteryKST() (0.70 legacy / 0.85 unified) → Solid
 //   - PMastery < 0.30                        → Fragile
 //   - retention(elapsed, stability) < 0.50   → Fragile
 //   - otherwise                              → InProgress
@@ -57,7 +57,7 @@ func NodeClassify(cs *models.ConceptState) NodeState {
 	if cs == nil || cs.CardState == "new" {
 		return NodeNotStarted
 	}
-	if cs.PMastery >= algorithms.KSTMasteryThreshold {
+	if cs.PMastery >= algorithms.MasteryKST() {
 		return NodeSolid
 	}
 	if cs.PMastery < nodeFragileMasteryThreshold {
@@ -439,7 +439,7 @@ func progressPhrase(p float64) string {
 	switch {
 	case p < 0.30:
 		return "tu démarres"
-	case p < 0.70:
+	case p < algorithms.MasteryKST():
 		return "à mi-chemin"
 	default:
 		return "presque arrivé"

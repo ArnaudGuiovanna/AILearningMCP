@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"tutor-mcp/algorithms"
 	"tutor-mcp/models"
 )
 
@@ -45,9 +46,10 @@ func ComputeAutonomyMetrics(input AutonomyInput) models.AutonomyMetrics {
 	// 3. Hint independence: 1 - (hints on mastered / total on mastered)
 	hintIndependence := 1.0
 	if len(input.ConceptStates) > 0 {
+		masteryMid := algorithms.MasteryMid()
 		masteredConcepts := make(map[string]bool)
 		for _, cs := range input.ConceptStates {
-			if cs.PMastery >= 0.80 {
+			if cs.PMastery >= masteryMid {
 				masteredConcepts[cs.Concept] = true
 			}
 		}
@@ -208,10 +210,11 @@ func DetectMirrorPattern(input MirrorInput) *models.MirrorMessage {
 		}
 	}
 
-	// Priority 2: hint_overuse — hints on mastered concepts (BKT >= 0.80)
+	// Priority 2: hint_overuse — hints on mastered concepts (PMastery >= MasteryMid)
+	masteryMid := algorithms.MasteryMid()
 	masteredConcepts := make(map[string]bool)
 	for _, cs := range input.ConceptStates {
-		if cs.PMastery >= 0.80 {
+		if cs.PMastery >= masteryMid {
 			masteredConcepts[cs.Concept] = true
 		}
 	}

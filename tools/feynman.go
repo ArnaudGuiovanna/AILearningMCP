@@ -47,7 +47,7 @@ func registerFeynmanChallenge(server *mcp.Server, deps *Deps) {
 			r, _ := jsonResult(map[string]interface{}{
 				"eligible":  false,
 				"mastery":   cs.PMastery,
-				"threshold": algorithms.BKTMasteryThreshold,
+				"threshold": algorithms.MasteryBKT(),
 				"message":   "Concept pas encore maitrise. Continue la pratique reguliere.",
 			})
 			return r, nil, nil

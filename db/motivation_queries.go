@@ -81,7 +81,7 @@ func (s *Store) ConceptMasteryDelta(learnerID string, domainConcepts []string, s
 }
 
 // MilestonesInWindow returns concepts newly mastered in the window [since, now].
-// "Newly mastered" = current PMastery >= BKTMasteryThreshold AND the most recent
+// "Newly mastered" = current PMastery >= MasteryBKT() AND the most recent
 // interaction on that concept is after `since` (approximation).
 func (s *Store) MilestonesInWindow(learnerID string, domainConcepts []string, since time.Time) ([]string, error) {
 	states, err := s.GetConceptStatesByLearner(learnerID)
@@ -98,7 +98,7 @@ func (s *Store) MilestonesInWindow(learnerID string, domainConcepts []string, si
 		if !domainSet[cs.Concept] {
 			continue
 		}
-		if cs.PMastery < algorithms.BKTMasteryThreshold {
+		if cs.PMastery < algorithms.MasteryBKT() {
 			continue
 		}
 		// Check there's at least one interaction since `since`.

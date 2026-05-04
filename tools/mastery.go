@@ -49,8 +49,8 @@ func registerCheckMastery(server *mcp.Server, deps *Deps) {
 			r, _ := jsonResult(map[string]interface{}{
 				"mastery_ready": false,
 				"current_mastery": cs.PMastery,
-				"threshold":       algorithms.BKTMasteryThreshold,
-				"message":         fmt.Sprintf("Pas encore pret. Maitrise actuelle: %.0f%%, seuil: %.0f%%", cs.PMastery*100, algorithms.BKTMasteryThreshold*100),
+				"threshold":       algorithms.MasteryBKT(),
+				"message":         fmt.Sprintf("Pas encore pret. Maitrise actuelle: %.0f%%, seuil: %.0f%%", cs.PMastery*100, algorithms.MasteryBKT()*100),
 			})
 			return r, nil, nil
 		}

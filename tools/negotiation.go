@@ -119,8 +119,9 @@ func registerLearningNegotiation(server *mcp.Server, deps *Deps) {
 
 			prereqs := domain.Graph.Prerequisites[params.LearnerConcept]
 			unmetPrereqs := 0
+			masteryMid := algorithms.MasteryMid()
 			for _, p := range prereqs {
-				if mastery[p] < 0.80 {
+				if mastery[p] < masteryMid {
 					unmetPrereqs++
 				}
 			}

@@ -12,7 +12,9 @@ type BKTState struct {
 	PGuess   float64
 }
 
-const BKTMasteryThreshold = 0.85
+// Mastery thresholds are exposed via accessors in thresholds.go (MasteryBKT,
+// MasteryKST, MasteryMid). The bascule REGULATION_THRESHOLD=on collapses
+// them to a single 0.85 — see docs/regulation-design/07-threshold-resolver.md.
 
 func BKTUpdate(state BKTState, correct bool) BKTState {
 	var pMasteryGivenObs float64
@@ -58,5 +60,5 @@ func BKTUpdateWithErrorType(state BKTState, correct bool, errorType string) BKTS
 }
 
 func BKTIsMastered(state BKTState) bool {
-	return state.PMastery >= BKTMasteryThreshold
+	return state.PMastery >= MasteryBKT()
 }

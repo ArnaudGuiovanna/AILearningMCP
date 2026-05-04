@@ -47,7 +47,7 @@ func ComputeAlerts(states []*models.ConceptState, recentInteractions []*models.I
 		}
 
 		// MASTERY_READY: BKT >= 0.85
-		if cs.PMastery >= algorithms.BKTMasteryThreshold {
+		if cs.PMastery >= algorithms.MasteryBKT() {
 			alerts = append(alerts, models.Alert{
 				Type:              models.AlertMasteryReady,
 				Concept:           cs.Concept,
@@ -267,11 +267,12 @@ func ComputeMetacognitiveAlerts(
 		}
 	}
 
-	// TRANSFER_BLOCKED: BKT >= 0.85 but transfer_score < 0.50 on 2+ contexts
+	// TRANSFER_BLOCKED: PMastery >= MasteryBKT() but transfer_score < 0.50 on 2+ contexts
 	if options.ConceptStates != nil && options.TransferRecords != nil {
+		masteryBKT := algorithms.MasteryBKT()
 		mastered := make(map[string]bool)
 		for _, cs := range options.ConceptStates {
-			if cs.PMastery >= 0.85 {
+			if cs.PMastery >= masteryBKT {
 				mastered[cs.Concept] = true
 			}
 		}

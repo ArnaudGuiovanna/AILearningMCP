@@ -31,6 +31,13 @@ type BriefInput struct {
 
 // InferInterestPhase maps session count / mastery / self-initiated ratio to a
 // Hidi-Renninger phase label.
+//
+// The 0.85 here is *not* a BKT mastery threshold and intentionally bypasses
+// algorithms.MasteryBKT() / REGULATION_THRESHOLD. It is an empirical bound
+// for the "individual interest" phase from Hidi & Renninger 2006 (Four-Phase
+// Model of Interest Development), which is conceptually orthogonal to the
+// runtime's notion of "concept BKT-maîtrisé". Coupling them was rejected in
+// docs/regulation-design/07-threshold-resolver.md OQ-7.2.
 func InferInterestPhase(sessions int, mastery, selfInitRatio float64) string {
 	if mastery > 0.85 || (selfInitRatio > 0.6 && sessions >= 3) {
 		return models.InterestPhaseIndividual
@@ -47,7 +54,7 @@ func InferInterestPhase(sessions int, mastery, selfInitRatio float64) string {
 // crossedMilestone returns the nearest threshold (0.5, 0.7, 0.85) the current
 // mastery sits within ±0.02 of, or 0 if none.
 func crossedMilestone(p float64) float64 {
-	thresholds := []float64{algorithms.BKTMasteryThreshold, 0.7, 0.5}
+	thresholds := []float64{algorithms.MasteryBKT(), 0.7, 0.5}
 	for _, t := range thresholds {
 		if p >= t-0.02 && p <= t+0.02 {
 			return t
