@@ -223,9 +223,12 @@ func TestMilestonesInWindow(t *testing.T) {
 func TestCountSessionsOnConcept(t *testing.T) {
 	store := setupTestDB(t)
 
-	// 3 interactions, 2 distinct dates
-	insertSimpleInteraction(t, store, "Goroutines", true, time.Now().UTC().Add(-48*time.Hour))
-	insertSimpleInteraction(t, store, "Goroutines", false, time.Now().UTC().Add(-45*time.Hour)) // same day as above
+	// Anchor the first two interactions to a stable UTC day (D-2 at 02:00 and 08:00 UTC)
+	// so they always fall on the same UTC date regardless of wallclock at run time.
+	// The third uses "now-1h", which is on a strictly later UTC date than D-2.
+	twoDaysAgoMidnight := time.Now().UTC().Truncate(24 * time.Hour).Add(-2 * 24 * time.Hour)
+	insertSimpleInteraction(t, store, "Goroutines", true, twoDaysAgoMidnight.Add(2*time.Hour))
+	insertSimpleInteraction(t, store, "Goroutines", false, twoDaysAgoMidnight.Add(8*time.Hour))
 	insertSimpleInteraction(t, store, "Goroutines", true, time.Now().UTC().Add(-1*time.Hour))
 
 	count, err := store.CountSessionsOnConcept("L1", "Goroutines")
