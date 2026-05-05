@@ -6,9 +6,41 @@ package tools
 
 import (
 	"context"
+	"os"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// regulationActionEnabled gates the action-selector documentation
+// appendix. Strict equality opt-in (cf. regulationGoalEnabled): only
+// the literal "on" turns it on, preventing typo-driven activation.
+func regulationActionEnabled() bool {
+	return os.Getenv("REGULATION_ACTION") == "on"
+}
+
+// regulationConceptEnabled gates the concept-selector documentation
+// appendix. Strict equality opt-in (same pattern as the other
+// regulation flags).
+func regulationConceptEnabled() bool {
+	return os.Getenv("REGULATION_CONCEPT") == "on"
+}
+
+// regulationGateEnabled gates the gate-controller documentation
+// appendix.
+func regulationGateEnabled() bool {
+	return os.Getenv("REGULATION_GATE") == "on"
+}
+
+// regulationPhaseEnabled toggles the [2] PhaseController orchestrator
+// in tools/activity.go. When "on", get_next_activity routes through
+// engine.Orchestrate (FSM + Gate → ConceptSelector → ActionSelector);
+// otherwise the legacy engine.Route remains in charge (backward-compat).
+//
+// Strict equality opt-in (cohérent avec les autres flags REGULATION_*)
+// — typos like "ON", " on", "1" do NOT activate the orchestrator.
+func regulationPhaseEnabled() bool {
+	return os.Getenv("REGULATION_PHASE") == "on"
+}
 
 const systemPrompt = `Tu es un tutor MCP — pas un assistant. Tu as un role precis.
 
@@ -131,6 +163,67 @@ Quand appeler set_goal_relevance :
 - Après add_concepts si tu veux maintenir le routage goal-aware sur les nouveaux concepts.
 - Tu peux appeler partiellement (un sous-ensemble des concepts) — c'est INCREMENTAL.`
 
+// actionSelectorAppendix is appended to systemPrompt when REGULATION_ACTION=on.
+// It documents the four new ActivityType constants emitted by [5] ActionSelector
+// once it is wired into the runtime (router migration deferred to PR [2]).
+// Until that wiring lands, the appendix is a forward-looking documentation
+// surface so the LLM-side prompt is ready when the new types start flowing.
+const actionSelectorAppendix = `
+
+ACTION-AWARE (REGULATION_ACTION=on) :
+4 nouveaux types d'activite peuvent etre emis par get_next_activity quand l'orchestrateur de regulation est cable :
+- PRACTICE : exercice standard de pratique. La difficulte cible la ZPD via IRT (pCorrect ~ 0.70).
+- DEBUG_MISCONCEPTION : confronte une croyance fausse detectee. Distinct de DEBUGGING_CASE qui sert a casser un plateau via la variete de format ; ici la confrontation est ciblee sur la misconception active.
+- FEYNMAN_PROMPT : l'apprenant explique le concept pour consolider la maitrise et reveler les gaps residuels.
+- TRANSFER_PROBE : application dans un contexte nouveau pour tester le transfert hors de la situation initiale.
+
+Cascade interne (a titre informatif, [5] decide pour toi) :
+- misconception active > retention basse > brackets de mastery (0.30 / 0.70 / 0.85 stable sur N=3 interactions).
+- En haut de l'echelle, rotation MasteryChallenge -> Feynman -> Transfer -> cycle.`
+
+// conceptSelectorAppendix is appended to systemPrompt when REGULATION_CONCEPT=on.
+// It documents the goal-aware concept routing introduced by [4]
+// ConceptSelector, with explicit emphasis on the OQ-4.3 = B' contract:
+// concepts absent from set_goal_relevance are NOT selectable until
+// re-decomposed. The appendix is forward-looking — the function is
+// not yet wired into the runtime (deferred to PR [2]).
+const conceptSelectorAppendix = `
+
+CONCEPT-AWARE (REGULATION_CONCEPT=on) :
+Le composant [4] ConceptSelector choisit le prochain concept en fonction de la phase courante et du vecteur goal_relevance.
+
+Cascade interne par phase (informatif, [4] decide pour toi) :
+- INSTRUCTION (defaut) : argmax(goal_relevance × (1 - mastery)) sur la frange externe (prereqs satisfaits, mastery < seuil unifie).
+- MAINTENANCE : argmax((1 - retention) × goal_relevance) sur les concepts maitrises.
+- DIAGNOSTIC : argmax(BKT info-gain) sur les concepts non-satures (v1 ignore goal_relevance).
+
+CONTRAT IMPORTANT — concepts non couverts par set_goal_relevance :
+Les concepts presents dans le graphe mais ABSENTS du vecteur goal_relevance ne sont PAS selectionnables. Ils sont exclus de la frange et de la pool MAINTENANCE. Si la frange devient vide ainsi (NoFringe), l'orchestrateur le signale et tu dois :
+1. Appeler get_goal_relevance pour identifier les concepts manquants (champ uncovered_concepts).
+2. Appeler set_goal_relevance avec un score pour chacun.
+
+C'est la regle apres tout add_concepts : les nouveaux concepts ne deviennent eligibles qu'apres decomposition. Aucun defaut silencieux n'est applique — c'est intentionnel pour rendre le contrat decomposeur explicite.`
+
+// gateAppendix is appended to systemPrompt when REGULATION_GATE=on.
+// Documents the visible effects of [3] Gate Controller (the new
+// CLOSE_SESSION ActivityType, the misconception lock, and the silent
+// vetos that shape the candidate pool).
+const gateAppendix = `
+
+GATE-AWARE (REGULATION_GATE=on) :
+Le composant [3] Gate Controller filtre les candidats avant le routage. Trois nouveautes visibles cote LLM :
+
+1. Nouveau type d'activite : CLOSE_SESSION
+   Emis quand l'apprenant a depasse la duree maximum de session (alerte OVERLOAD, ~45 min).
+   Distinction semantique avec REST :
+   - REST = pause INTRA-session ; l'apprenant continuera apres dans la meme session.
+   - CLOSE_SESSION = fin de session forcee ; emets le recap_brief et appelle record_session_close.
+   Quand tu recois CLOSE_SESSION, ne propose pas un nouvel exercice — la session se termine.
+
+2. Vetos de selection (transparents pour toi) : le Gate exclut certains concepts du pool sur la base de prereqs KST non satisfaits, repetitions recentes (sauf alerte FORGETTING qui passe outre, et sauf misconception active qui passe outre aussi), et OVERLOAD. Tu n'as rien a faire de specifique — la liste des concepts disponibles arrive deja filtree.
+
+3. Misconception lock : si un concept est ramene avec ActivityType=DEBUG_MISCONCEPTION, c'est que le Gate a verrouille ce concept sur le format debug. Concentre l'echange sur la confrontation de l'erreur — pas de pratique standard tant que la misconception n'est pas resolue (resolution = 3 interactions consecutives sans cette misconception).`
+
 // buildSystemPrompt assembles the prompt at request time so that flag-gated
 // sections (goal-aware tools, future regulation components) appear only
 // when their feature flag is on. Each gated section lives in its own const
@@ -139,6 +232,15 @@ func buildSystemPrompt() string {
 	out := systemPrompt
 	if regulationGoalEnabled() {
 		out += goalDecomposerAppendix
+	}
+	if regulationActionEnabled() {
+		out += actionSelectorAppendix
+	}
+	if regulationConceptEnabled() {
+		out += conceptSelectorAppendix
+	}
+	if regulationGateEnabled() {
+		out += gateAppendix
 	}
 	return out
 }

@@ -97,8 +97,30 @@ func registerGetNextActivity(server *mcp.Server, deps *Deps) {
 			}
 		}
 
-		// Route to next activity (session-aware)
-		activity := engine.Route(alerts, frontier, domainStates, domainInteractions, sessionConcepts)
+		// Route to next activity (session-aware).
+		// Branchement [2] PhaseController : si REGULATION_PHASE=on,
+		// l'orchestrateur regulation prend la main ; sinon le router
+		// legacy reste en place (cohérent avec OQ-2.4 = no cache, le
+		// flag est lu à chaque appel).
+		var activity models.Activity
+		if regulationPhaseEnabled() {
+			orchActivity, orchErr := engine.Orchestrate(deps.Store, engine.OrchestratorInput{
+				LearnerID: learnerID,
+				DomainID:  domain.ID,
+				Now:       time.Now().UTC(),
+				Config:    engine.NewDefaultPhaseConfig(),
+			})
+			if orchErr != nil {
+				// Fallback gracieux : log + legacy. Évite de casser
+				// la session sur une erreur orchestrateur.
+				deps.Logger.Error("orchestrator failed, falling back to legacy router", "err", orchErr)
+				activity = engine.Route(alerts, frontier, domainStates, domainInteractions, sessionConcepts)
+			} else {
+				activity = orchActivity
+			}
+		} else {
+			activity = engine.Route(alerts, frontier, domainStates, domainInteractions, sessionConcepts)
+		}
 
 		// Metacognitive mirror
 		since := time.Now().UTC().Add(-7 * 24 * time.Hour)

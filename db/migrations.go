@@ -54,6 +54,13 @@ func Migrate(db *sql.DB) error {
 		`ALTER TABLE domains ADD COLUMN graph_version INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE domains ADD COLUMN goal_relevance_json TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE domains ADD COLUMN goal_relevance_version INTEGER NOT NULL DEFAULT 0`,
+		// [2] PhaseController — FSM state per domain. NULL on existing
+		// rows means "legacy domain, treat as PhaseInstruction"
+		// (backward-compat per OQ-2.1.b). New domains created when
+		// REGULATION_PHASE=on are initialised to DIAGNOSTIC explicitly.
+		`ALTER TABLE domains ADD COLUMN phase TEXT`,
+		`ALTER TABLE domains ADD COLUMN phase_changed_at TIMESTAMP`,
+		`ALTER TABLE domains ADD COLUMN phase_entry_entropy REAL`,
 	}
 	for _, m := range alterMigrations {
 		_, _ = db.Exec(m) // ignore "duplicate column" errors

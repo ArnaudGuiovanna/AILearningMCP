@@ -32,6 +32,23 @@ func parseTimeFlex(s string) (time.Time, error) {
 
 // ─── Misconception Groups ──────────────────────────────────────────────────
 
+// MisconceptionResolutionWindow is the number of most-recent interactions
+// inspected to determine whether a misconception is "active" or
+// "resolved":
+//
+//   - any of the last N interactions on the concept carries the
+//     misconception_type → status is "active"
+//   - none does → status is "resolved"
+//
+// Single source of truth for the resolution latency. Read by
+// computeMisconceptionStatus (below) and referenced semantically by
+// [3] Gate Controller, which consumes the derived status (not the raw
+// count) via GetActiveMisconceptions. Changing this constant changes
+// the resolution latency uniformly across the system.
+//
+// Documented in docs/regulation-design/03-gate-controller.md OQ-3.3.
+const MisconceptionResolutionWindow = 3
+
 type MisconceptionGroup struct {
 	Concept           string    `json:"concept"`
 	MisconceptionType string    `json:"misconception_type"`
@@ -107,15 +124,15 @@ func (s *Store) getLastMisconceptionDetail(learnerID, concept, misconceptionType
 	return "", nil
 }
 
-// computeMisconceptionStatus checks the 3 most recent interactions on a concept
-// and returns "active" if any of them carry the given misconception_type, or
-// "resolved" otherwise.
+// computeMisconceptionStatus inspects the MisconceptionResolutionWindow
+// most recent interactions on a concept and returns "active" if any of
+// them carry the given misconception_type, or "resolved" otherwise.
 func (s *Store) computeMisconceptionStatus(learnerID, concept, misconceptionType string) string {
 	rows, err := s.db.Query(
 		`SELECT misconception_type FROM interactions
 		 WHERE learner_id = ? AND concept = ?
-		 ORDER BY created_at DESC LIMIT 3`,
-		learnerID, concept,
+		 ORDER BY created_at DESC LIMIT ?`,
+		learnerID, concept, MisconceptionResolutionWindow,
 	)
 	if err != nil {
 		return "active" // err on the side of caution

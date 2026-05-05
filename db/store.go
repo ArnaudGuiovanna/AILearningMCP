@@ -49,6 +49,12 @@ type Store struct {
 	db *sql.DB
 }
 
+// RawDB returns the underlying *sql.DB. Intended for tests that need
+// to insert with explicit timestamps (e.g. simulating older
+// interactions for diagnostic-window assertions). Not for use in
+// production code paths — use the typed Store methods instead.
+func (s *Store) RawDB() *sql.DB { return s.db }
+
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
@@ -275,7 +281,7 @@ func (s *Store) CreateDomainWithValueFramings(learnerID, name, personalGoal stri
 	}, nil
 }
 
-const domainCols = `id, learner_id, name, personal_goal, graph_json, value_framings_json, last_value_axis, archived, pinned_concept, graph_version, goal_relevance_json, goal_relevance_version, created_at`
+const domainCols = `id, learner_id, name, personal_goal, graph_json, value_framings_json, last_value_axis, archived, pinned_concept, graph_version, goal_relevance_json, goal_relevance_version, phase, phase_changed_at, phase_entry_entropy, created_at`
 
 // scanDomainFields is the shared row decoder for both *sql.Row and *sql.Rows
 // callers — Scan has the same signature on both so we factor through a small
@@ -288,12 +294,15 @@ type domainScanner interface {
 func scanDomainFields(s domainScanner) (*models.Domain, error) {
 	d := &models.Domain{}
 	var graphJSON, goalRelevanceJSON string
-	var valueFramings, lastAxis, pinnedConcept sql.NullString
+	var valueFramings, lastAxis, pinnedConcept, phase sql.NullString
+	var phaseChangedAt sql.NullTime
+	var phaseEntryEntropy sql.NullFloat64
 	var archived int
 	err := s.Scan(
 		&d.ID, &d.LearnerID, &d.Name, &d.PersonalGoal, &graphJSON,
 		&valueFramings, &lastAxis, &archived, &pinnedConcept,
 		&d.GraphVersion, &goalRelevanceJSON, &d.GoalRelevanceVersion,
+		&phase, &phaseChangedAt, &phaseEntryEntropy,
 		&d.CreatedAt,
 	)
 	if err != nil {
@@ -310,6 +319,15 @@ func scanDomainFields(s domainScanner) (*models.Domain, error) {
 		d.PinnedConcept = pinnedConcept.String
 	}
 	d.GoalRelevanceJSON = goalRelevanceJSON
+	if phase.Valid {
+		d.Phase = models.Phase(phase.String)
+	}
+	if phaseChangedAt.Valid {
+		d.PhaseChangedAt = phaseChangedAt.Time
+	}
+	if phaseEntryEntropy.Valid {
+		d.PhaseEntryEntropy = phaseEntryEntropy.Float64
+	}
 	if err := json.Unmarshal([]byte(graphJSON), &d.Graph); err != nil {
 		return nil, fmt.Errorf("unmarshal graph: %w", err)
 	}

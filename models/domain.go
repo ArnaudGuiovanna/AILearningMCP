@@ -53,6 +53,42 @@ const (
 	ActivityDebuggingCase    ActivityType = "DEBUGGING_CASE"
 	ActivityRest             ActivityType = "REST"
 	ActivitySetupDomain      ActivityType = "SETUP_DOMAIN"
+
+	// Activity types emitted by [5] ActionSelector (engine/action_selector.go).
+	// Available in the enum unconditionally so the type system stays sound;
+	// they are only produced at runtime once REGULATION_ACTION wires
+	// SelectAction into the legacy router (deferred to PR [2]).
+	//
+	// ActivityDebugMisconception is intentionally distinct from
+	// ActivityDebuggingCase: the latter is a *plateau-breaking* rotation
+	// of varied formats ("debugging" / "real_world_case" /
+	// "teaching_exercise" / "creative_application" — engine/router.go),
+	// while DebugMisconception is a *targeted* confrontation of one
+	// specific active misconception detected on the concept. Different
+	// pedagogical intent, different downstream LLM handling.
+	ActivityPractice           ActivityType = "PRACTICE"
+	ActivityDebugMisconception ActivityType = "DEBUG_MISCONCEPTION"
+	ActivityFeynmanPrompt      ActivityType = "FEYNMAN_PROMPT"
+	ActivityTransferProbe      ActivityType = "TRANSFER_PROBE"
+
+	// ActivityCloseSession is emitted by [3] Gate Controller as an
+	// *escape action* when the OVERLOAD alert fires (session has run
+	// past its hygiene budget, ~45 min). Distinct from ActivityRest:
+	//
+	//   - ActivityRest        = pause INTRA-session. The learner will
+	//                            continue the same session afterwards.
+	//                            Used by the legacy router on OVERLOAD
+	//                            today, but only as a soft suggestion.
+	//   - ActivityCloseSession = forced END of session. The pipeline
+	//                            short-circuits — no further activity
+	//                            is selected. The LLM is expected to
+	//                            emit recap_brief and call
+	//                            record_session_close.
+	//
+	// Available in the enum unconditionally so the type system stays
+	// sound; only produced at runtime once REGULATION_GATE wires
+	// ApplyGate into the legacy router (deferred to PR [2]).
+	ActivityCloseSession ActivityType = "CLOSE_SESSION"
 )
 
 type Activity struct {
@@ -71,19 +107,34 @@ type KnowledgeSpace struct {
 }
 
 type Domain struct {
-	ID                     string
-	LearnerID              string
-	Name                   string
-	PersonalGoal           string
-	Graph                  KnowledgeSpace
-	ValueFramingsJSON      string
-	LastValueAxis          string
-	Archived               bool
-	PinnedConcept          string
-	GraphVersion           int
-	GoalRelevanceJSON      string
-	GoalRelevanceVersion   int
-	CreatedAt              time.Time
+	ID                   string
+	LearnerID            string
+	Name                 string
+	PersonalGoal         string
+	Graph                KnowledgeSpace
+	ValueFramingsJSON    string
+	LastValueAxis        string
+	Archived             bool
+	PinnedConcept        string
+	GraphVersion         int
+	GoalRelevanceJSON    string
+	GoalRelevanceVersion int
+	// Phase is the FSM state set by [2] PhaseController. Empty string
+	// means "not yet initialised" — read as PhaseInstruction by the
+	// orchestrator (legacy backward-compat fallback per OQ-2.1).
+	Phase Phase
+	// PhaseChangedAt is the UTC timestamp of the last phase
+	// transition. Used to count diagnostic items lazily (interactions
+	// since this timestamp).
+	PhaseChangedAt time.Time
+	// PhaseEntryEntropy is the mean binary entropy of P(L) over the
+	// domain's concepts at the moment the phase was last set to
+	// DIAGNOSTIC. Compared against current mean entropy to determine
+	// the DIAGNOSTIC → INSTRUCTION transition (OQ-2.2). Zero (or
+	// effectively unset) means "no snapshot available" — only the
+	// NDiagnosticMax escape applies.
+	PhaseEntryEntropy float64
+	CreatedAt         time.Time
 }
 
 // GoalRelevance is the parsed payload of Domain.GoalRelevanceJSON. It maps

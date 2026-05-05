@@ -1,0 +1,419 @@
+// Copyright (c) 2026 Arnaud Guiovanna <https://www.aguiovanna.fr>
+// GitHub: https://github.com/ArnaudGuiovanna/ArnaudGuiovanna
+// SPDX-License-Identifier: MIT
+
+// Package engine — [2] PhaseController orchestrator (runtime).
+//
+// Orchestrate is the runtime entry point for the regulation pipeline
+// when REGULATION_PHASE=on. It :
+//
+//  1. Reads the current phase from the store (NULL → INSTRUCTION
+//     fallback per OQ-2.1.b).
+//  2. Pre-fetches the observables (states, alerts, recent concepts,
+//     active misconceptions, goal_relevance) and computes the mean
+//     binary entropy of P(L).
+//  3. Evaluates the FSM (pure call to EvaluatePhase).
+//  4. Persists the transition if any.
+//  5. Runs the Gate → ConceptSelector → ActionSelector pipeline
+//     with one-shot retry on NoFringe (the FSM is re-evaluated and
+//     the pipeline retried once).
+//  6. Returns a models.Activity with concept and prompt composed.
+//
+// The function takes a *db.Store (impure) but its sub-helpers
+// (EvaluatePhase, runPipeline, etc.) are pure functions tested in
+// isolation. Layered design supports unit + integration testing.
+package engine
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"time"
+
+	"tutor-mcp/algorithms"
+	"tutor-mcp/db"
+	"tutor-mcp/models"
+)
+
+// ErrUnknownDomain is returned when the orchestrator cannot find the
+// domain referenced by OrchestratorInput.DomainID.
+var ErrUnknownDomain = errors.New("orchestrator: unknown domain")
+
+// OrchestratorInput carries the read-only context one Orchestrate
+// call needs. The Store and time are explicit dependencies (not
+// globals) for testability.
+type OrchestratorInput struct {
+	LearnerID string
+	DomainID  string
+	// Now is the wall-clock used for phase_changed_at and any time
+	// arithmetic. Tests pass deterministic timestamps.
+	Now time.Time
+	// Config is injected — typically NewDefaultPhaseConfig() in
+	// production. Tests can pass narrower configs to drive specific
+	// scenarios.
+	Config PhaseConfig
+}
+
+// orchestratorMaxRetries is the upper bound on FSM-driven pipeline
+// retries inside a single Orchestrate call. Set to 1 (one retry on
+// NoFringe — see §4 of the design doc). Hard-coded because the
+// retry is structural, not tunable.
+const orchestratorMaxRetries = 1
+
+// Orchestrate runs the full regulation pipeline for one
+// get_next_activity call. Returns a models.Activity ready for the
+// LLM-side post-processing (tutor_mode, calibration_bias,
+// motivation_brief — handled by tools/activity.go as today).
+func Orchestrate(store *db.Store, input OrchestratorInput) (models.Activity, error) {
+	domain, err := store.GetDomainByID(input.DomainID)
+	if err != nil {
+		return models.Activity{}, fmt.Errorf("%w: %q: %v", ErrUnknownDomain, input.DomainID, err)
+	}
+
+	// 1. Read current phase ; NULL → INSTRUCTION fallback (OQ-2.1.b).
+	currentPhase := domain.Phase
+	if currentPhase == "" {
+		currentPhase = models.PhaseInstruction
+	}
+
+	// 2. Fetch observables (states, recent, misconceptions, alerts).
+	pf, err := fetchPipelineFixtures(store, domain, input)
+	if err != nil {
+		return models.Activity{}, err
+	}
+
+	// 3. Build PhaseObservables and evaluate the FSM.
+	obs := buildObservables(domain, pf, input.Config)
+	eval := EvaluatePhase(currentPhase, obs, input.Config)
+	fsmTransitioned := eval.Transitioned
+	if fsmTransitioned {
+		entryEntropy := 0.0
+		if eval.To == models.PhaseDiagnostic {
+			entryEntropy = obs.MeanEntropy
+		}
+		if persistErr := store.UpdateDomainPhase(domain.ID, eval.To, entryEntropy, input.Now); persistErr != nil {
+			slog.Error("orchestrator: failed to persist phase transition",
+				"domain", domain.ID, "from", eval.From, "to", eval.To, "err", persistErr)
+			// The transition is informative — failing to persist
+			// must not block the live activity. Continue with the
+			// new in-memory phase.
+		}
+		currentPhase = eval.To
+	}
+
+	// 4. Run pipeline with one-shot retry on NoFringe.
+	//
+	// Important : if the FSM just transitioned this call, we do NOT
+	// retry on NoFringe — that would risk *undoing* the transition
+	// (e.g. MAINTENANCE → INSTRUCTION on retention drop, then INSTRUCTION
+	// has no fringe because the concept is still BKT-mastered, then
+	// retry sends us back to MAINTENANCE). The FSM decision wins ;
+	// NoFringe in the new phase is reported via REST.
+	for retry := 0; retry <= orchestratorMaxRetries; retry++ {
+		activity, sig, err := runPipeline(store, domain, pf, currentPhase, input)
+		if err != nil {
+			return models.Activity{}, err
+		}
+		if !sig.IsNoFringe {
+			return activity, nil
+		}
+		if fsmTransitioned || retry >= orchestratorMaxRetries {
+			break
+		}
+		// NoFringe — try a single phase fallback (only if FSM didn't
+		// just decide).
+		next := noFringeFallbackPhase(currentPhase)
+		if next == currentPhase {
+			break
+		}
+		if persistErr := store.UpdateDomainPhase(domain.ID, next, 0, input.Now); persistErr != nil {
+			slog.Error("orchestrator: failed to persist NoFringe fallback transition",
+				"domain", domain.ID, "from", currentPhase, "to", next, "err", persistErr)
+		}
+		currentPhase = next
+	}
+
+	return models.Activity{
+		Type:         models.ActivityRest,
+		Rationale:    "pipeline_exhausted: NoFringe persistant après retry",
+		PromptForLLM: "Aucune activite eligible apres retry. Demande a l'apprenant ce qu'il souhaite faire.",
+	}, nil
+}
+
+// pipelineSignal lets runPipeline communicate "no candidate, please
+// retry with a different phase" without dressing it up as an error
+// (NoFringe is a *signal*, not a failure — cf. OQ-3.1).
+type pipelineSignal struct {
+	IsNoFringe bool
+}
+
+// pipelineFixtures bundles the data fetched once per Orchestrate call
+// and reused across the FSM evaluation and the pipeline run.
+type pipelineFixtures struct {
+	StatesList     []*models.ConceptState
+	StatesByConcept map[string]*models.ConceptState
+	GoalRelevance  map[string]float64 // nil if vector absent/parse-failed
+	ActiveMisc     map[string]bool
+	RecentConcepts []string
+	Alerts         []models.Alert
+	DiagnosticItems int // count since phase_changed_at
+}
+
+func fetchPipelineFixtures(store *db.Store, domain *models.Domain, input OrchestratorInput) (*pipelineFixtures, error) {
+	states, err := store.GetConceptStatesByLearner(input.LearnerID)
+	if err != nil {
+		return nil, fmt.Errorf("get states: %w", err)
+	}
+	stateMap := make(map[string]*models.ConceptState, len(states))
+	for _, cs := range states {
+		stateMap[cs.Concept] = cs
+	}
+
+	var goalRelevance map[string]float64
+	if gr := domain.ParseGoalRelevance(); gr != nil {
+		goalRelevance = gr.Relevance
+	}
+
+	activeMisc, err := store.GetActiveMisconceptionsBatch(input.LearnerID, domain.Graph.Concepts)
+	if err != nil {
+		return nil, fmt.Errorf("get active misconceptions: %w", err)
+	}
+
+	recent, err := store.GetRecentConceptsByDomain(input.LearnerID, domain.Graph.Concepts, 20)
+	if err != nil {
+		return nil, fmt.Errorf("get recent concepts: %w", err)
+	}
+
+	// Diagnostic items count since phase_changed_at — only meaningful
+	// when current phase is DIAGNOSTIC, but cheap enough to always
+	// fetch.
+	var diagItems int
+	if !domain.PhaseChangedAt.IsZero() {
+		diagItems, err = store.CountInteractionsSince(input.LearnerID, domain.PhaseChangedAt, domain.Graph.Concepts)
+		if err != nil {
+			return nil, fmt.Errorf("count diagnostic items: %w", err)
+		}
+	}
+
+	// Alerts: re-derive from current state + recent interactions.
+	// Match what the existing get_next_activity flow does.
+	recentInteractions, err := store.GetRecentInteractionsByLearner(input.LearnerID, 50)
+	if err != nil {
+		return nil, fmt.Errorf("get recent interactions: %w", err)
+	}
+	alerts := ComputeAlerts(states, recentInteractions, input.Now)
+
+	return &pipelineFixtures{
+		StatesList:      states,
+		StatesByConcept: stateMap,
+		GoalRelevance:   goalRelevance,
+		ActiveMisc:      activeMisc,
+		RecentConcepts:  recent,
+		Alerts:          alerts,
+		DiagnosticItems: diagItems,
+	}, nil
+}
+
+func buildObservables(domain *models.Domain, pf *pipelineFixtures, cfg PhaseConfig) PhaseObservables {
+	meanH := MeanBinaryEntropyOverGraph(domain.Graph, pf.StatesByConcept)
+
+	bkt := algorithms.MasteryBKT()
+	mastered := 0
+	totalGoalRelevant := 0
+	belowRetention := false
+
+	for _, c := range domain.Graph.Concepts {
+		rel, hasRel := pf.GoalRelevance[c]
+		if pf.GoalRelevance == nil {
+			// Uniform fallback : every concept counts as goal-relevant.
+			rel = 1.0
+			hasRel = true
+		}
+		if !hasRel {
+			// Uncovered concept — exclu du set goal-relevant (cohérent
+			// avec OQ-2.7 et [4] OQ-4.3 = B').
+			continue
+		}
+		if rel <= cfg.GoalRelevantCutoff {
+			continue
+		}
+		totalGoalRelevant++
+
+		cs := pf.StatesByConcept[c]
+		if cs == nil {
+			// Pas de state ≡ jamais pratiqué ≡ pas mastered, pas
+			// "below retention" (rien à oublier).
+			continue
+		}
+		if cs.PMastery >= bkt {
+			mastered++
+			// Even mastered concepts can be "below retention" —
+			// the MAINTENANCE → INSTRUCTION trigger looks at
+			// retention drop on goal-relevants, mastered or not.
+		}
+		if cs.CardState != "new" {
+			retention := algorithms.Retrievability(cs.ElapsedDays, cs.Stability)
+			if retention < cfg.RetentionRecallThreshold {
+				belowRetention = true
+			}
+		}
+	}
+
+	return PhaseObservables{
+		MeanEntropy:                meanH,
+		PhaseEntryEntropy:          domain.PhaseEntryEntropy,
+		DiagnosticItemsCount:       pf.DiagnosticItems,
+		MasteredGoalRelevant:       mastered,
+		TotalGoalRelevant:          totalGoalRelevant,
+		GoalRelevantBelowRetention: belowRetention,
+	}
+}
+
+// noFringeFallbackPhase suggests a reasonable phase to fall back to
+// when the pipeline returns NoFringe in the current phase. Used only
+// in the one-shot retry inside Orchestrate.
+func noFringeFallbackPhase(current models.Phase) models.Phase {
+	switch current {
+	case models.PhaseInstruction:
+		// Probably everything's mastered — try MAINTENANCE.
+		return models.PhaseMaintenance
+	case models.PhaseMaintenance:
+		// Probably nothing mastered — back to INSTRUCTION.
+		return models.PhaseInstruction
+	case models.PhaseDiagnostic:
+		// Stuck at saturation — go to INSTRUCTION.
+		return models.PhaseInstruction
+	default:
+		return current
+	}
+}
+
+// runPipeline executes Gate → ConceptSelector → ActionSelector and
+// composes the resulting models.Activity. Returns IsNoFringe=true
+// when [3] or [4] signal an empty pool (so Orchestrate can attempt
+// the one-shot phase retry).
+func runPipeline(
+	store *db.Store,
+	domain *models.Domain,
+	pf *pipelineFixtures,
+	phase models.Phase,
+	input OrchestratorInput,
+) (models.Activity, pipelineSignal, error) {
+	// ── [3] Gate ───────────────────────────────────────────────────
+	antiRep := input.Config.AntiRepeatWindow
+	if antiRep == 0 {
+		antiRep = DefaultAntiRepeatWindow
+	}
+	gateResult, err := ApplyGate(GateInput{
+		Phase:                phase,
+		Concepts:             domain.Graph.Concepts,
+		States:               pf.StatesByConcept,
+		Graph:                domain.Graph,
+		ActiveMisconceptions: pf.ActiveMisc,
+		RecentConcepts:       pf.RecentConcepts,
+		Alerts:               pf.Alerts,
+		AntiRepeatWindow:     antiRep,
+	})
+	if err != nil {
+		return models.Activity{}, pipelineSignal{}, fmt.Errorf("gate: %w", err)
+	}
+	if gateResult.EscapeAction != nil {
+		return composeEscapeActivity(*gateResult.EscapeAction), pipelineSignal{}, nil
+	}
+	if gateResult.NoCandidate {
+		return models.Activity{}, pipelineSignal{IsNoFringe: true}, nil
+	}
+
+	// ── [4] ConceptSelector — restricted to gate's allowed pool ────
+	allowedSet := make(map[string]bool, len(gateResult.AllowedConcepts))
+	for _, c := range gateResult.AllowedConcepts {
+		allowedSet[c] = true
+	}
+	filteredGraph := models.KnowledgeSpace{
+		Concepts:      gateResult.AllowedConcepts,
+		Prerequisites: filterPrerequisites(domain.Graph.Prerequisites, allowedSet),
+	}
+	selection, err := SelectConcept(phase, pf.StatesList, filteredGraph, pf.GoalRelevance)
+	if err != nil {
+		return models.Activity{}, pipelineSignal{}, fmt.Errorf("concept_selector: %w", err)
+	}
+	if selection.NoFringe {
+		return models.Activity{}, pipelineSignal{IsNoFringe: true}, nil
+	}
+
+	// ── [5] ActionSelector — on the chosen concept ────────────────
+	cs := pf.StatesByConcept[selection.Concept]
+	if cs == nil {
+		// Concept dans le graphe mais sans state — créer un state par
+		// défaut pour SelectAction (mastery=0, theta=0) afin d'éviter
+		// le panic. SelectAction's NaN-guard handles missing fields.
+		cs = models.NewConceptState(input.LearnerID, selection.Concept)
+	}
+	var mc *db.MisconceptionGroup
+	if pf.ActiveMisc[selection.Concept] {
+		mc, err = store.GetFirstActiveMisconception(input.LearnerID, selection.Concept)
+		if err != nil {
+			return models.Activity{}, pipelineSignal{}, fmt.Errorf("fetch misconception: %w", err)
+		}
+	}
+	history, err := store.GetActionHistoryForConcept(input.LearnerID, selection.Concept, 50)
+	if err != nil {
+		return models.Activity{}, pipelineSignal{}, fmt.Errorf("action history: %w", err)
+	}
+	action := SelectAction(selection.Concept, cs, mc, ActionHistory{
+		InteractionsAboveBKT:  history.InteractionsAboveBKT,
+		MasteryChallengeCount: history.MasteryChallengeCount,
+		FeynmanCount:          history.FeynmanCount,
+		TransferCount:         history.TransferCount,
+	})
+
+	// Honor Gate's ActionRestriction (defensive — [5] already
+	// prioritises misconception, so this is belt + braces).
+	if restrictions, ok := gateResult.ActionRestriction[selection.Concept]; ok && len(restrictions) > 0 {
+		if !containsActivityType(restrictions, action.Type) {
+			action.Type = restrictions[0]
+			action.Rationale = "gate ActionRestriction override : " + action.Rationale
+		}
+	}
+
+	return composeActivity(action, selection, phase), pipelineSignal{}, nil
+}
+
+func filterPrerequisites(src map[string][]string, allowed map[string]bool) map[string][]string {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(allowed))
+	for c := range allowed {
+		if pre, ok := src[c]; ok {
+			out[c] = pre
+		}
+	}
+	return out
+}
+
+func containsActivityType(set []models.ActivityType, t models.ActivityType) bool {
+	return slices.Contains(set, t)
+}
+
+func composeActivity(a Action, sel Selection, phase models.Phase) models.Activity {
+	return models.Activity{
+		Type:             a.Type,
+		Concept:          sel.Concept,
+		DifficultyTarget: a.DifficultyTarget,
+		Format:           a.Format,
+		EstimatedMinutes: a.EstimatedMinutes,
+		Rationale:        fmt.Sprintf("[phase=%s] %s · %s", phase, sel.Rationale, a.Rationale),
+		PromptForLLM:     fmt.Sprintf("Genere une activite %s sur %s. Format: %s. Difficulte cible: %.2f.", a.Type, sel.Concept, a.Format, a.DifficultyTarget),
+	}
+}
+
+func composeEscapeActivity(esc EscapeAction) models.Activity {
+	return models.Activity{
+		Type:         esc.Type,
+		Format:       esc.Format,
+		Rationale:    esc.Rationale,
+		PromptForLLM: "Session terminee. Emets le recap_brief et appelle record_session_close.",
+	}
+}
