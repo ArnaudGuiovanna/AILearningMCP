@@ -88,7 +88,7 @@ On top of the legacy alert-and-router engine, v0.3 introduces a seven-stage **re
 | **[2]** | Phase Controller (`engine/orchestrator.go` + `engine/phase_fsm.go`) | **Shipped** (opt-in) | Pure-FSM orchestrator wiring [4]→[5]→[3]. Transitions are observation-driven: DIAGNOSTIC→INSTRUCTION on entropy reduction *ΔH ≥ 0.2 bits* or *N ≥ 8* diagnostic items; INSTRUCTION→MAINTENANCE on full-graph mastery; MAINTENANCE→INSTRUCTION on FSRS retention drop. Flag: `REGULATION_PHASE=on`. |
 | **[6]** | Fade Controller | **Pending** | Gradual handover of pacing decisions to the learner once autonomy thresholds are met. Not implemented yet. |
 
-The pure functions (`SelectAction`, `SelectConcept`, `ApplyGate`, `EvaluatePhase`) are individually unit-tested (~110 dedicated tests). The orchestrator is exercised by SQLite in-memory tests, three end-to-end scenarios with JSON+Markdown evidence artifacts in [`eval/orchestrator_e2e_*`](./eval/), and migration safety tests for the new `domains.phase`, `domains.phase_changed_at`, `domains.phase_entry_entropy` columns.
+The pure functions (`SelectAction`, `SelectConcept`, `ApplyGate`, `EvaluatePhase`) are individually unit-tested (~90 dedicated tests). The orchestrator is exercised by SQLite in-memory tests, three end-to-end scenarios with JSON+Markdown evidence artifacts in [`eval/orchestrator_e2e_*`](./eval/), and migration safety tests for the new `domains.phase`, `domains.phase_changed_at`, `domains.phase_entry_entropy` columns.
 
 ### Feature flags — strict-equality opt-in
 
@@ -441,7 +441,7 @@ The figures below include a safety buffer (~50%) against the theoretical limits.
 - **SQLite** (via modernc.org/sqlite — pure Go, no CGO)
 - **JWT** for access tokens, bcrypt for passwords
 - **robfig/cron** for background scheduling
-- **640+ tests** covering the five algorithms, the regulation pipeline (action / concept / gate / phase-FSM / orchestrator), legacy router and alert engine, motivation selection, misconception aggregation, OLM snapshots, goal-relevance staleness, schema migrations, and end-to-end orchestrator scenarios
+- **800+ tests** covering the five algorithms, the regulation pipeline (action / concept / gate / phase-FSM / orchestrator), legacy router and alert engine, motivation selection, misconception aggregation, OLM snapshots, goal-relevance staleness, schema migrations, and end-to-end orchestrator scenarios
 
 ## Pedagogical Validity — Current Status
 
