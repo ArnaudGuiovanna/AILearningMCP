@@ -126,6 +126,7 @@ func RegisterTools(server *mcp.Server, deps *Deps) {
 	registerRecordSessionClose(server, deps)
 	registerQueueWebhookMessage(server, deps)
 	registerRequestExercise(server, deps)
+	registerSubmitAnswer(server, deps)
 	// [1] GoalDecomposer — gated by REGULATION_GOAL=on. When off, neither
 	// tool is registered, so the surface is invisible to the LLM and the
 	// system prompt has no instruction to call them.

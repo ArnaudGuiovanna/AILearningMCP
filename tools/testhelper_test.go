@@ -206,3 +206,65 @@ func callToolWithSampling(
 	}
 	return res
 }
+
+// callToolWithSamplingSeq is callToolWithSampling but returns successive
+// elements of samplingResponses on each successive sampling/createMessage
+// call. Used to exercise retry logic.
+func callToolWithSamplingSeq(
+	t *testing.T,
+	deps *Deps,
+	register func(*mcp.Server, *Deps),
+	learnerID, name string,
+	args any,
+	samplingResponses []string,
+) *mcp.CallToolResult {
+	t.Helper()
+	ctx := context.Background()
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	register(server, deps)
+	if learnerID != "" {
+		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				ctx = context.WithValue(ctx, auth.LearnerIDKey, learnerID)
+				return next(ctx, method, req)
+			}
+		})
+	}
+	st, ct := mcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := 0
+	clientOpts := &mcp.ClientOptions{
+		CreateMessageHandler: func(ctx context.Context, req *mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+			if idx >= len(samplingResponses) {
+				return nil, fmt.Errorf("test: no canned response left at idx=%d", idx)
+			}
+			r := samplingResponses[idx]
+			idx++
+			return &mcp.CreateMessageResult{
+				Content: &mcp.TextContent{Text: r},
+				Model:   "test-model",
+				Role:    "assistant",
+			}, nil
+		},
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "client", Version: "0.0.1"}, clientOpts)
+	session, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	argsJSON, _ := json.Marshal(args)
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      name,
+		Arguments: json.RawMessage(argsJSON),
+	})
+	if err != nil {
+		t.Fatalf("CallTool transport error for %q: %v", name, err)
+	}
+	return res
+}
