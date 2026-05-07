@@ -315,7 +315,7 @@ func registerCockpitResource(server *mcp.Server, deps *Deps) {
 			uri = req.Params.URI
 		}
 		deps.Logger.Info("cockpit resource read", "uri", uri)
-		body, err := assets.FS.ReadFile("cockpit.html")
+		body, err := assets.FS.ReadFile("app.html")
 		if err != nil {
 			deps.Logger.Error("cockpit resource: read embedded html", "err", err)
 			return nil, err
